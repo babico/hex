@@ -75,6 +75,9 @@ ChangesEnvironment=yes
 MinVersion=10.0
 
 [Files]
+#ifdef TurkishSttDir
+Source: "{#TurkishSttDir}\*"; DestDir: "{app}\versions\{#AppVersion}\turkish-stt"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 Source: "{#Executable}"; DestDir: "{app}\versions\{#AppVersion}"; DestName: "hex.exe"; Flags: ignoreversion
 #ifdef Console
 Source: "{#Console}"; DestDir: "{app}\versions\{#AppVersion}"; DestName: "hex.com"; Flags: ignoreversion

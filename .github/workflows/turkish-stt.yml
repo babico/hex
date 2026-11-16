@@ -28,7 +28,7 @@ jobs:
         run: python -m unittest discover -s extras/turkish-stt -p "test_*.py"
   desktop:
     if: github.event_name == 'push' || inputs.build_desktop
-    needs: companion
+    needs: [companion, sherpa-native]
     uses: ./.github/workflows/build-desktop.yml
     with:
       sha: ${{ github.sha }}
@@ -36,6 +36,7 @@ jobs:
       channel: ""
       test-build: true
       artifact-prefix: turkish-stt
+      turkish-stt: true
   macos:
     if: github.event_name == 'push' || inputs.build_desktop
     needs: [companion, sherpa-native]

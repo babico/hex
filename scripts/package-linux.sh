@@ -36,6 +36,13 @@ install -m755 "$executable" "$temporary/hex"
 sed 's#@HEX_BIN@#/usr/bin/hex#g' "$root/packaging/anomaly.hex.desktop" > "$temporary/anomaly.hex.desktop"
 cp "$root/packaging/hex.service" "$root/LICENSE" "$root/packaging/linux/refresh-desktop.sh" "$temporary/"
 cp -R "$root/packaging/linux/icons" "$temporary/icons"
+config="$root/packaging/linux/nfpm.yaml"
+if [ -n "${HEX_TURKISH_STT_DIR:-}" ]; then
+  cp -R "$HEX_TURKISH_STT_DIR" "$temporary/turkish-stt"
+  chmod +x "$temporary/turkish-stt/hex-sherpa-worker"
+  awk '/^contents:$/ {print; print "  - src: turkish-stt/"; print "    dst: /usr/lib/hex/turkish-stt/"; print "    type: tree"; next} {print}' "$config" > "$temporary/nfpm.yaml"
+  config="$temporary/nfpm.yaml"
+fi
 
 # Debian and RPM order a tilde before a release, and neither allows a hyphen
 # in the upstream version: 0.0.0-dev-42 is 0.0.0~dev.42, 2.5.0-beta.1 is
@@ -46,7 +53,7 @@ for format in deb rpm; do
   (
     cd "$temporary"
     HEX_PACKAGE_ARCH=$arch HEX_PACKAGE_VERSION=$package_version \
-      "$nfpm" package --config "$root/packaging/linux/nfpm.yaml" --packager "$format" \
+      "$nfpm" package --config "$config" --packager "$format" \
       --target "$dist/hex-$version-linux-$label.$format" >&2
   )
   echo "$dist/hex-$version-linux-$label.$format"
