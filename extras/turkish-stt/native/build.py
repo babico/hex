@@ -2,18 +2,17 @@
 import argparse
 import hashlib
 from pathlib import Path
-import platform
 import subprocess
 import tarfile
 import tempfile
 from urllib.request import urlretrieve
 
 ASSETS = {
-    "linux-x64": ("linux-x64-shared-no-tts-lib", "bf2d998c8b07012cd5098f3b92673bc1333fd9b927767d7cb664be8190d8bc0b"),
-    "linux-arm64": ("linux-aarch64-shared-cpu-lib", "fb98b80628a383909bf83626daca2e0d0ffc93bf1f7d222eaaa4282b388f072f"),
-    "macos-arm64": ("osx-arm64-shared-no-tts-lib", "f3e0cbd86cc3f38dad30c97921b40e9a8bcc6f2c943777eb76ad77176993e417"),
-    "windows-x64": ("win-x64-shared-MD-Release-no-tts-lib", "b90992b888710715d613a4fedcd75d5b4db294ef64f3194e4f77ea0a8b387441"),
-    "windows-arm64": ("win-arm64-shared-MD-Release-no-tts-lib", "bdd1e9a1334d2f79ce64fac4cc417d88a954f961f6055056c213c9f5321efdd4"),
+    "linux-x64": ("linux-x64-shared-no-tts", "d0f96c8b65c6cd0974fada22737e337de81bc8cd2abbec2e39caf358b1eec5fc"),
+    "linux-arm64": ("linux-aarch64-shared-cpu", "4e3734f82bc1379fd91f219f5869c7e9d03b7a4f7561907d8abca4849c51a789"),
+    "macos-arm64": ("osx-arm64-shared-no-tts", "91b96512c4fa1960f8a9ed5360a6c8dda53a4b5015d0590244f14086a234557a"),
+    "windows-x64": ("win-x64-shared-MD-Release-no-tts", "876e6b89b8cf84a3a1b375a397507f2cfe9c227c2a945411a11a668475fcb5d3"),
+    "windows-arm64": ("win-arm64-shared-MD-Release-no-tts", "39446be8a2a933308bb0b4b7a77fd21fdffaa68d3d73fc6f1e63634bb42d9cca"),
 }
 VERSION = "v1.13.8"
 
@@ -37,7 +36,7 @@ def main():
         headers = list((root / "sdk").rglob("cxx-api.h"))
         headers = [h for h in headers if h.parent.name == "c-api" and h.parent.parent.name == "sherpa-onnx"]
         if len(headers) != 1:
-            raise RuntimeError("Could not locate sherpa-onnx SDK header")
+            raise RuntimeError("Could not locate sherpa-onnx SDK header; archive contains: " + ", ".join(str(p.relative_to(root)) for p in list((root / "sdk").rglob("*"))[:50]))
         sdk = headers[0].parents[3]
         build = root / "build"
         source = Path(__file__).resolve().parent
