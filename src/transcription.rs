@@ -80,7 +80,11 @@ impl Transcriber {
                 .map(Box::new)
                 .map(Self::Gguf),
             ModelRuntime::AppleSpeech => AppleSpeech::load(selection).map(Self::AppleSpeech),
-            ModelRuntime::External => external::ExternalRunner::load(selection).map(Self::External),
+            ModelRuntime::External => {
+                let runner = external::ExternalRunner::load(selection)?;
+                runner.prewarm()?;
+                Ok(Self::External(runner))
+            }
         }
     }
 
@@ -97,7 +101,8 @@ impl Transcriber {
     pub fn prewarm(&mut self) -> Result<()> {
         match self {
             Self::Gguf(model) => model.prewarm(),
-            Self::AppleSpeech(_) | Self::External(_) => Ok(()),
+            Self::AppleSpeech(_) => Ok(()),
+            Self::External(model) => model.prewarm(),
         }
     }
 

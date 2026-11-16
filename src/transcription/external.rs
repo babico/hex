@@ -8,6 +8,7 @@ use color_eyre::eyre::{Result, bail, eyre, WrapErr};
 use serde::{Deserialize, Serialize};
 use super::models::TranscriptionSelection;
 pub(crate) mod install;
+mod worker;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ExternalModelId {
@@ -130,6 +131,7 @@ pub struct ExternalRunner {
     pub selection: TranscriptionSelection,
     id: ExternalModelId,
     config: Registration,
+    worker: std::sync::Mutex<Option<worker::Worker>>,
 }
 
 struct Scratch(PathBuf);
@@ -157,7 +159,16 @@ impl ExternalRunner {
         let super::models::TranscriptionModelId::External(id) = selection.model else { bail!("Expected external STT model"); };
         let config = read_registration(id)?;
         if let Some(dir) = &config.managed_weights { install::verify(dir, None)?; }
-        Ok(Self { selection: selection.clone(), id, config })
+        Ok(Self { selection: selection.clone(), id, config, worker: std::sync::Mutex::new(None) })
+    }
+
+    pub fn prewarm(&self) -> Result<()> {
+        if self.config.managed_weights.is_none() { return Ok(()); }
+        let mut guard = self.worker.lock().map_err(|_| eyre!("External worker lock poisoned"))?;
+        if guard.as_mut().is_some_and(worker::Worker::running) { return Ok(()); }
+        *guard = None;
+        *guard = Some(worker::Worker::spawn(&self.config, self.id, &self.selection.language)?);
+        Ok(())
     }
 
     pub fn transcribe(&self, samples: &[f32]) -> Result<String> {
@@ -173,6 +184,14 @@ impl ExternalRunner {
             writer.write_sample(sample)?;
         }
         writer.finalize()?;
+        if self.config.managed_weights.is_some() {
+            self.prewarm()?;
+            let path = wav.to_str().ok_or_else(|| eyre!("Audio path must be UTF-8"))?;
+            let mut guard = self.worker.lock().map_err(|_| eyre!("External worker lock poisoned"))?;
+            let result = guard.as_mut().ok_or_else(|| eyre!("External worker missing"))?.request(path);
+            if result.is_err() { *guard = None; }
+            return result;
+        }
         let mut command = Command::new(&self.config.executable);
         if self.config.python {
             command.arg("-c").arg(include_str!("../../extras/turkish-stt/stt.py"))

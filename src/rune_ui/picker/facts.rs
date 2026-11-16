@@ -235,7 +235,16 @@ pub(super) fn blurb(def: &ModelDefinition) -> &'static str {
         M::NbWhisperMedium => tr("Whisper, tuned for Norwegian by its National Library"),
         M::GraniteSpeech5 => tr("IBM's model for seven languages, with punctuation"),
         M::AppleSpeech => tr("Apple's speech recognition, kept up to date by macOS"),
-        M::External(_) => "Experimental local backend; register with hex turkish-stt before choosing",
+        M::External(id) => {
+            use crate::transcription::external::ExternalModelId as E;
+            match id {
+                E::MihuV2 => "Powered by mihu · Community License · review terms and accept-license before download",
+                E::SedaV2 | E::SedaTiny => "Seda by Atasoglu · CC BY-SA 4.0 · experimental native Sherpa backend",
+                E::Kulak => "Ufak AI · Apache 2.0 · experimental native Sherpa backend",
+                E::BalbalManas | E::BalbalV2 => "Powered by balbal · review Community License · registered vendor runtime",
+                _ => "Experimental local backend; register with hex turkish-stt before choosing",
+            }
+        },
         M::Custom(_) => "",
     }
 }
@@ -413,7 +422,9 @@ pub(super) fn progress_line(p: Paint, entry: &Entry) -> El {
 /// the compare columns.
 pub(super) fn choose_button(p: Paint, entry: &Entry, primary: bool) -> El {
     let def = entry.def;
-    let label = if downloads(entry) {
+    let label = if entry.state == State::NotDownloaded && matches!(def.id, TranscriptionModelId::External(id) if crate::transcription::external::install::supported(id)) {
+        tr("Download").into()
+    } else if downloads(entry) {
         tr_fill("Download {}", &def.size_label())
     } else {
         tr("Use").into()
@@ -434,6 +445,13 @@ pub(super) fn choose_button(p: Paint, entry: &Entry, primary: bool) -> El {
 /// The list's quieter Use or download action, at row size.
 pub(super) fn row_choose_button(p: Paint, entry: &Entry) -> El {
     let def = entry.def;
+    if entry.state == State::NotDownloaded && matches!(def.id, TranscriptionModelId::External(id) if crate::transcription::external::install::supported(id)) {
+        return Button::new(tr("Download"))
+            .variant(ButtonVariant::Neutral)
+            .on_press_tx(move |ui: &mut Ui, _| choose(ui, def))
+            .build_small_push(p.k)
+            .key("choose-model");
+    }
     if !downloads(entry) {
         return Button::new(tr("Use"))
             .variant(ButtonVariant::Neutral)

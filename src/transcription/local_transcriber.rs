@@ -256,9 +256,11 @@ impl LocalTranscriber {
     /// GPU is remembered as failed.
     pub fn load(selection: &TranscriptionSelection) -> Result<Self> {
         if matches!(validate(selection)?.runtime, super::models::ModelRuntime::External) {
+            let runner = super::external::ExternalRunner::load(selection)?;
+            runner.prewarm()?;
             return Ok(Self {
                 session: None,
-                external: Some(super::external::ExternalRunner::load(selection)?),
+                external: Some(runner),
                 selection: selection.clone(),
                 options: RunOptions::default(),
                 device_label: "External local STT".into(),
@@ -506,7 +508,8 @@ impl LocalTranscriber {
     /// Brings an idle model's weights back before audio arrives, as loading
     /// does; a model that ran recently is already warm.
     pub(crate) fn prewarm(&mut self) -> Result<()> {
-        if self.external.is_some() || self.session.as_ref().is_some_and(|session| session.ran_recently()) {
+        if let Some(external) = &self.external { return external.prewarm(); }
+        if self.session.as_ref().is_some_and(|session| session.ran_recently()) {
             return Ok(());
         }
         self.warm_on_silence()
