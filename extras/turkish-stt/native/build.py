@@ -33,11 +33,12 @@ def main():
                 raise RuntimeError("Sherpa SDK integrity check failed")
         with tarfile.open(archive, "r:bz2") as tar:
             tar.extractall(root / "sdk", filter="data")
-        headers = list((root / "sdk").rglob("cxx-api.h"))
-        headers = [h for h in headers if h.parent.name == "c-api" and h.parent.parent.name == "sherpa-onnx"]
-        if len(headers) != 1:
-            raise RuntimeError("Could not locate sherpa-onnx SDK header; archive contains: " + ", ".join(str(p.relative_to(root)) for p in list((root / "sdk").rglob("*"))[:50]))
-        sdk = headers[0].parents[3]
+        # Some official distributions omit headers. Always compile against
+        # the vendored, version-matched C API instead of a C++ ABI.
+        sdk_dirs = [p for p in (root / "sdk").iterdir() if p.is_dir() and (p / "lib").is_dir()]
+        if len(sdk_dirs) != 1:
+            raise RuntimeError("Expected one SDK directory with libraries")
+        sdk = sdk_dirs[0]
         build = root / "build"
         source = Path(__file__).resolve().parent
         flags = []
