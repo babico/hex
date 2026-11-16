@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use color_eyre::eyre::{Result, bail, eyre, WrapErr};
 use serde::{Deserialize, Serialize};
 use super::models::TranscriptionSelection;
+pub(crate) mod install;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ExternalModelId {
@@ -55,6 +56,8 @@ struct Registration {
     executable: PathBuf,
     args: Vec<String>,
     python: bool,
+    #[serde(default)]
+    managed_weights: Option<PathBuf>,
 }
 
 pub fn registration_path(id: ExternalModelId) -> Result<PathBuf> {
@@ -79,9 +82,18 @@ pub fn register(id: ExternalModelId, executable: &Path, args: Vec<String>, pytho
     if !executable.is_file() { bail!("Expected an executable file"); }
     let path = registration_path(id)?;
     fs::create_dir_all(path.parent().ok_or_else(|| eyre!("Missing model directory"))?)?;
-    super::models::write_json_atomically(&path, &Registration { executable, args, python })
+    super::models::write_json_atomically(&path, &Registration { executable, args, python, managed_weights: None })
 }
 
+pub(super) fn register_managed(id: ExternalModelId, executable: &Path, dir: &Path) -> Result<()> {
+    let weights = dir.to_str().ok_or_else(|| eyre!("Model folder must be UTF-8"))?;
+    super::models::write_json_atomically(&registration_path(id)?, &Registration { executable: executable.to_path_buf(), args: vec!["--weights".into(), weights.into()], python: false, managed_weights: Some(dir.to_path_buf()) })
+}
+pub fn verify_registration(id: ExternalModelId, canceled: &std::sync::atomic::AtomicBool) -> Result<PathBuf> {
+    let config = read_registration(id)?;
+    if let Some(dir) = &config.managed_weights { install::verify(dir, Some(canceled))?; }
+    registration_path(id)
+}
 pub fn unregister(id: ExternalModelId) -> Result<()> {
     match fs::remove_file(registration_path(id)?) {
         Ok(()) => Ok(()),
@@ -92,9 +104,14 @@ pub fn unregister(id: ExternalModelId) -> Result<()> {
 
 pub fn cli(args: &[OsString]) -> Result<bool> {
     let action = args.first().and_then(|a| a.to_str()).unwrap_or("");
-    if !matches!(action, "register" | "register-python" | "unregister") { return Ok(false); }
+    if !matches!(action, "register" | "register-python" | "unregister" | "accept-license") { return Ok(false); }
     let id = args.get(1).and_then(|a| a.to_str()).and_then(ExternalModelId::parse)
         .ok_or_else(|| eyre!("Unknown model; run hex turkish-stt list"))?;
+    if action == "accept-license" {
+        if args.len() != 2 { bail!("Usage: hex turkish-stt accept-license MODEL"); }
+        install::accept_license(id)?;
+        return Ok(true);
+    }
     if action == "unregister" {
         if args.len() != 2 { bail!("Usage: hex turkish-stt unregister MODEL"); }
         unregister(id)?;
@@ -138,7 +155,9 @@ impl Drop for Scratch {
 impl ExternalRunner {
     pub fn load(selection: &TranscriptionSelection) -> Result<Self> {
         let super::models::TranscriptionModelId::External(id) = selection.model else { bail!("Expected external STT model"); };
-        Ok(Self { selection: selection.clone(), id, config: read_registration(id)? })
+        let config = read_registration(id)?;
+        if let Some(dir) = &config.managed_weights { install::verify(dir, None)?; }
+        Ok(Self { selection: selection.clone(), id, config })
     }
 
     pub fn transcribe(&self, samples: &[f32]) -> Result<String> {
@@ -170,6 +189,7 @@ impl ExternalRunner {
         let result: Result<_> = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
+                Ok(None) if super::gguf_session::job_cancel().is_some_and(|token| token.is_cancelled()) => break Err(eyre!("External STT canceled")),
                 Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
                 Ok(None) => break Err(eyre!("External STT backend timed out")),
                 Err(e) => break Err(e.into()),

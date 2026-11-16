@@ -1056,8 +1056,7 @@ pub fn is_verified(model: &ModelDefinition) -> bool {
 pub fn verify_installed(model: &ModelDefinition, canceled: &AtomicBool) -> Result<PathBuf> {
     check_canceled(canceled)?;
     if let TranscriptionModelId::External(id) = model.id {
-        if !external::registered(id) { bail!("Register {} first with hex turkish-stt register or register-python", model.name); }
-        return external::registration_path(id);
+        return external::verify_registration(id, canceled);
     }
     if let TranscriptionModelId::Custom(id) = model.id {
         return super::custom_models::verify(id, canceled);
@@ -1199,7 +1198,7 @@ fn delete_set_aside_in(directory: &Path) {
 /// Takes the models folder's download lock. While another process holds it
 /// (`hex model install` in a terminal, or another Hex), `waiting` hears every
 /// attempt, so a caller can report that process's progress.
-fn lock_downloads(directory: &Path, canceled: &AtomicBool, waiting: impl Fn()) -> Result<File> {
+pub(crate) fn lock_downloads(directory: &Path, canceled: &AtomicBool, waiting: impl Fn()) -> Result<File> {
     let lock = File::create(directory.join(".download.lock"))?;
     loop {
         check_canceled(canceled)?;
@@ -1257,7 +1256,10 @@ pub fn download_with_stage_progress(
     downloaded_bytes: &AtomicU64,
     stage: &AtomicU8,
 ) -> Result<PathBuf> {
-    if matches!(model.runtime, ModelRuntime::External) {
+    if let TranscriptionModelId::External(id) = model.id {
+        if !external::registered(id) && external::install::supported(id) {
+            return external::install::install(id, canceled, downloaded_bytes, stage);
+        }
         ModelPreparationStage::Verifying.store(stage);
         return verify_installed(model, canceled);
     }

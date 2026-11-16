@@ -1,0 +1,130 @@
+//! Local downloads of data-only models. Never downloads or executes code.
+use std::{fs, path::{Path, PathBuf}, sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering}, time::Duration};
+use color_eyre::eyre::{Result, bail, eyre};
+use serde::{Deserialize, Serialize};
+use super::{ExternalModelId, registration_path};
+use crate::transcription::models::{self, ModelPreparationStage};
+
+const MIHU: &[&str] = &["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"];
+const SEDA: &[&str] = &["encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt"];
+const KULAK: &[&str] = &["sherpa-onnx-tdt/encoder.int8.onnx", "sherpa-onnx-tdt/decoder.int8.onnx", "sherpa-onnx-tdt/joiner.int8.onnx", "sherpa-onnx-tdt/tokens.txt"];
+
+fn source(id: ExternalModelId) -> Option<(&'static str, &'static str, &'static [&'static str])> {
+    use ExternalModelId::*;
+    Some(match id {
+        MihuV2 => ("mihuai/turkish-stt-66m-v2", "bc2f77287cfc3ec2568cf5ba9f9181e1a43bfff4", MIHU),
+        // Seda's immutable revision is resolved and recorded on installation.
+        SedaV2 => ("atasoglu/seda-v0.2", "main", SEDA),
+        SedaTiny => ("atasoglu/seda-v0.2-tiny", "main", SEDA),
+        Kulak => ("ufakai/ufakzeka-kulak", "886194bb06f71460169cd741e1fd8ed515fd9d1c", KULAK),
+        _ => return None,
+    })
+}
+
+pub(crate) fn supported(id: ExternalModelId) -> bool { source(id).is_some() }
+
+fn worker() -> Result<PathBuf> {
+    let name = if cfg!(windows) { "hex-sherpa-worker.exe" } else { "hex-sherpa-worker" };
+    let exe = std::env::current_exe()?;
+    let mut paths = vec![exe.parent().ok_or_else(|| eyre!("No executable directory"))?.join("turkish-stt").join(name)];
+    if let Some(dir) = std::env::var_os("HEX_STT_NATIVE_DIR") { paths.insert(0, PathBuf::from(dir).join(name)); }
+    #[cfg(target_os = "linux")]
+    paths.push(PathBuf::from("/usr/lib/hex/turkish-stt").join(name));
+    paths.into_iter().find(|p| p.is_absolute() && p.is_file()).ok_or_else(|| eyre!("Native worker not found. Install the matching fork bundle or set HEX_STT_NATIVE_DIR."))
+}
+
+#[derive(Deserialize)]
+struct Hub { sha: String, siblings: Vec<Sibling> }
+#[derive(Deserialize)]
+struct Sibling { rfilename: String, size: Option<u64>, lfs: Option<Lfs> }
+#[derive(Deserialize)]
+struct Lfs { sha256: String }
+#[derive(Serialize, Deserialize)]
+struct Receipt { repo: String, revision: String, files: Vec<Stored> }
+#[derive(Serialize, Deserialize)]
+struct Stored { name: String, bytes: u64, sha256: String }
+
+fn check(canceled: &AtomicBool) -> Result<()> {
+    if canceled.load(Ordering::Acquire) { bail!("Model installation canceled"); } Ok(())
+}
+fn acknowledgement(id: ExternalModelId) -> Result<PathBuf> {
+    Ok(models::models_dir()?.join("external").join(format!("{}.license-accepted", id.as_str())))
+}
+pub(crate) fn accept_license(id: ExternalModelId) -> Result<()> {
+    if id != ExternalModelId::MihuV2 { bail!("Only Mihu requires this acknowledgement"); }
+    let path = acknowledgement(id)?;
+    fs::create_dir_all(path.parent().ok_or_else(|| eyre!("Missing model directory"))?)?;
+    crate::durable::write(&path, b"mihu Community License 1.0; user acknowledgement\n")?;
+    Ok(())
+}
+
+pub(crate) fn install(id: ExternalModelId, canceled: &AtomicBool, downloaded: &AtomicU64, stage: &AtomicU8) -> Result<PathBuf> {
+    let (repo, revision, required) = source(id).ok_or_else(|| eyre!("Register the model's vendor runtime first"))?;
+    let executable = worker()?;
+    if id == ExternalModelId::MihuV2 && !acknowledgement(id)?.is_file() {
+        bail!("Powered by mihu. Review https://huggingface.co/mihuai/turkish-stt-66m-v2/blob/main/LICENSE; if eligible and you accept, run hex turkish-stt accept-license mihu-v2, then choose the model again.");
+    }
+    check(canceled)?;
+    ModelPreparationStage::Downloading.store(stage);
+    let url = format!("https://huggingface.co/api/models/{repo}/revision/{revision}?blobs=true");
+    let agent = crate::net::agent(&url, |cfg| cfg.https_only(true).timeout_recv_response(Some(Duration::from_secs(60))).timeout_recv_body(Some(Duration::from_secs(60))));
+    let mut response = agent.get(&url).header("User-Agent", "hex-turkish-stt").call()?;
+    let meta: Hub = serde_json::from_reader(response.body_mut().with_config().limit(8 << 20).reader())?;
+    if meta.sha.len() != 40 || !meta.sha.bytes().all(|b| b.is_ascii_hexdigit()) || (revision != "main" && meta.sha != revision) { bail!("Invalid model revision"); }
+    let dir = models::models_dir()?.join("external").join("weights").join(id.as_str()).join(&meta.sha);
+    fs::create_dir_all(&dir)?;
+    let _lock = models::lock_downloads(&dir, canceled, || {})?;
+    let mut names = required.to_vec();
+    for extra in ["README.md", "LICENSE", "ATTRIBUTION.md", "SHA256SUMS"] {
+        if meta.siblings.iter().any(|s| s.rfilename == extra) { names.push(extra); }
+    }
+    let mut done = 0;
+    let mut files = Vec::new();
+    for name in names {
+        check(canceled)?;
+        let info = meta.siblings.iter().find(|s| s.rfilename == name).ok_or_else(|| eyre!("Missing model file: {name}"))?;
+        let size = info.size.ok_or_else(|| eyre!("Missing file size: {name}"))?;
+        if size == 0 || size > 2_000_000_000 { bail!("Invalid file size: {name}"); }
+        let digest = info.lfs.as_ref().map(|l| l.sha256.as_str());
+        if name.ends_with(".onnx") && !digest.is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())) { bail!("No published ONNX SHA-256: {name}"); }
+        let target = dir.join(name);
+        fs::create_dir_all(target.parent().ok_or_else(|| eyre!("Invalid model path"))?)?;
+        let good = fs::metadata(&target).is_ok_and(|m| m.len() == size)
+            && digest.is_some_and(|d| models::sha256_hex(&target, Some(canceled)).is_ok_and(|actual| actual == d));
+        if !good {
+            let partial = target.with_file_name(format!("{}.partial", target.file_name().ok_or_else(|| eyre!("No file name"))?.to_string_lossy()));
+            if fs::metadata(&partial).is_ok_and(|m| m.len() > size) { fs::remove_file(&partial)?; }
+            let url = format!("https://huggingface.co/{repo}/resolve/{}/{name}", meta.sha);
+            crate::net::download(&crate::net::Download { url: &url, user_agent: "hex-turkish-stt", size: Some(size), canceled: Some(canceled) }, &partial,
+                |n| downloaded.store(done + n, Ordering::Relaxed))?;
+            let actual = models::sha256_hex(&partial, Some(canceled))?;
+            if fs::metadata(&partial)?.len() != size || digest.is_some_and(|d| actual != d) {
+                let _ = fs::remove_file(&partial);
+                bail!("Model checksum or size mismatch: {name}");
+            }
+            if target.exists() { fs::remove_file(&target)?; }
+            fs::rename(&partial, &target)?;
+        }
+        files.push(Stored { name: name.to_owned(), bytes: size, sha256: models::sha256_hex(&target, Some(canceled))? });
+        done += size; downloaded.store(done, Ordering::Relaxed);
+    }
+    ModelPreparationStage::Verifying.store(stage);
+    models::write_json_atomically(&dir.join("receipt.json"), &Receipt { repo: repo.to_owned(), revision: meta.sha, files })?;
+    verify(&dir, Some(canceled))?;
+    if id == ExternalModelId::MihuV2 { crate::durable::write(&dir.join("NOTICE"), &fs::read(dir.join("LICENSE"))?)?; }
+    check(canceled)?;
+    super::register_managed(id, &executable, &dir)?;
+    registration_path(id)
+}
+
+pub(super) fn verify(dir: &Path, canceled: Option<&AtomicBool>) -> Result<()> {
+    let receipt: Receipt = serde_json::from_slice(&fs::read(dir.join("receipt.json"))?)?;
+    if receipt.files.is_empty() { bail!("Empty model receipt"); }
+    for file in receipt.files {
+        let relative = Path::new(&file.name);
+        if !relative.components().all(|part| matches!(part, std::path::Component::Normal(_))) { bail!("Unsafe model path"); }
+        let path = dir.join(relative);
+        if fs::metadata(&path)?.len() != file.bytes || models::sha256_hex(&path, canceled)? != file.sha256 { bail!("Model checksum failed: {}", path.display()); }
+    }
+    Ok(())
+}
