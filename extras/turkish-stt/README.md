@@ -1,42 +1,41 @@
-# Experimental Turkish STT companion
+# Experimental Turkish STT fork
 
-The fork adds nine local-model entries through an independent CLI. This is an initial implementation, **not yet a replacement for Hex's native dictation engine or its Settings picker**. The existing models and defaults are unchanged.
+Nine models are wired into Hex's Rust catalog, model picker and whole-clip transcriber. Existing GGUF models remain unchanged and the default is still upstream Whisper. These are experimental: no claim of inference or build success until CI and actual recorded-speech tests pass.
 
-## Quick start
+## Python-free Sherpa backend (four models)
 
-Use Python 3.11 or 3.12 in a virtual environment. Run from the repository before compiling:
+Mihu v2, Seda v0.2, Seda Tiny, UfakZeka Kulak use the C++ Sherpa-ONNX 1.13.8 worker. Its five architecture builds download checksum-pinned SDK assets; model weights are not redistributed. The worker loads the provided local weights, uses CPU inference, emits JSON, and does not require Python at runtime. Seda uses beam search without the vendor's LM/formatter; its output and WER are not equivalent to sedalib accurate mode. Kulak uses the model author's gain-8 TDT setting for Sherpa 1.13.8.
+
+Build the worker (Python is only required for the SDK build helper; CMake and native C++ compiler required):
 
 ```sh
-python extras/turkish-stt/stt.py list
-python extras/turkish-stt/stt.py install balbal-manas
-python extras/turkish-stt/stt.py transcribe balbal-manas speech.wav
+python extras/turkish-stt/native/build.py --target linux-x64 --output native-dist
 ```
 
-After building the fork:
+Targets: linux-x64, linux-arm64, windows-x64, windows-arm64, macos-arm64. Keep the worker and shared SDK libraries together. Manually download each model's weights into a local folder from its repository (see models.json) after checking its license. For Mihu use encoder.int8.onnx, decoder.int8.onnx, joiner.int8.onnx and tokens.txt; for Seda use encoder.int8.onnx, decoder.onnx, joiner.int8.onnx and tokens.txt; for Kulak supply sherpa-onnx-tdt directory or its parent.
+
+```sh
+hex turkish-stt register mihu-v2 /absolute/path/native-dist/hex-sherpa-worker --weights /absolute/path/mihu
+hex model list
+hex model use mihu-v2
+```
+
+On Windows use the .exe and absolute paths. The native picker lists the models; after registration select the model in Settings if the app is running. Restart the app if its installed-state cache has not refreshed. Unregister with `hex turkish-stt unregister MODEL`. Registration checks the executable path, not model integrity or inference compatibility. No automatic weights or dependency download is performed by the picker. Initial implementation runs a process per clip, not a persistent model or live partials.
+
+## Other models: existing vendor adapter fallback
+
+Balbal Manas and Balbal v2 use the upstream package (custom ops + KenLM), Duyu its model-author Python engine (multi-stage ONNX + tokenizer), TurkMed and TurkSpeak Transformers until verified native ports or transcribe.cpp conversions exist. Their Python adapters are not yet validated on any platform. Python 3.11/3.12 virtual environments are recommended. Install selected dependencies and download/cache weights explicitly; check the actual file-based inference before registering:
 
 ```sh
 hex turkish-stt list
 hex turkish-stt install balbal-manas
 hex turkish-stt transcribe balbal-manas speech.wav
-hex turkish-stt transcribe balbal-manas speech.wav --offline
+hex turkish-stt register-python balbal-manas /absolute/path/to/venv/bin/python
+hex model use balbal-manas
 ```
 
-Set HEX_STT_PYTHON to the absolute interpreter path in the selected virtual environment. On Windows the fallback interpreter is python; elsewhere python3. List works without Python. Input is mono 16 kHz PCM16 WAV; convert other input with your chosen audio tool. Dependencies install only on explicit request; weights may download on the first invocation. Offline mode requests cached weights via the Hugging Face environment/API, but is not an operating-system network sandbox.
+Set HEX_STT_PYTHON to the virtual environment interpreter for companion CLI commands. The registered interpreter is used for dictation, requesting offline mode. This is not a network sandbox; only explicitly trusted local executables/packages should be registered. Duyu requires a reviewed local engine checkout, installed with pip install -e . and DUYU_SMALL_DIR set for the app. Vendor dependencies and weights need pinned versions and real tests before production; Balbal weights are non-commercial and Mihu has a custom Community License.
 
-## Model status
+## Build and validation
 
-All registry entries have experimental, unverified inference adapters. Balbal's upstream wheels are documented for Linux x64, macOS ARM64 and Windows x64; other architectures need native wheel validation. Duyu requires a reviewed local checkout of its engine, installed with pip install -e . and DUYU_SMALL_DIR pointing to the checkout. Mihu v2 uses its own Community License: review before redistribution. Whisper entries use full Transformers models, rather than an unverified GGUF conversion. No weights are bundled. Model downloads are not pinned in this prototype; pin revisions and checksums before production.
-
-## Build
-
-Use Actions → Turkish STT fork checks and unsigned builds. Push checks exercise the registry and mocked dispatch on Linux x64/ARM64, Windows x64/ARM64, and macOS ARM64. The manual desktop build reuses upstream's unsigned Linux/Windows jobs and builds an unsigned macOS app and DMG. If GitHub does not expose branch-only manual workflows yet, merge the reviewed workflow into the default branch first or run the upstream build scripts locally. No upstream release service credentials or signing keys are used; the build jobs do not publish a release. Packages are not proof of model wheel availability. Native macOS signing/notarization and Windows installer signing are separate release tasks.
-
-## Remaining native integration
-
-- Extend ModelRuntime, TranscriptionModelId and ModelDefinition with a real external runtime. Never pass ONNX weights to the GGUF engine; keep existing validated GGUF paths intact.
-- Connect the new catalog to src/rune_ui/models.rs, speech_model.rs, preparation and control/model listing; reflect explicit installation and platform compatibility.
-- Implement persistent worker lifecycle in macOS Transcriber and Linux/Windows LocalTranscriber; route engine, service, CLI and meeting requests without loading a dummy GGUF model. Support cancel, timeouts, offline policy and bounded inputs; no invented timestamps.
-- Use per-model verified revisions/artifacts, hash checks and licensed redistribution; isolate vendor environments. Add actual integration fixtures and cross-platform inference checks. Enable streaming only after partial/final parity is tested.
-- Keep the stock Whisper model as default until Turkish and TR/EN coding benchmark results demonstrate a better default. Measure WER, code-term accuracy, warm/cold latency and memory on actual devices.
-
-The companion is a development scaffold with callable adapters, not a tested full integration.
+The fork workflow builds unsigned desktop artifacts for Linux x64/ARM64, Windows x64/ARM64, macOS ARM64 and separate native worker bundles for all five. It reuses upstream build scripts but does not use upstream release service credentials. It runs on branch pushes. The registry/dispatch tests are mocked; worker smoke checks load the executable and call --help. Actual inference tests, native Balbal/Duyu implementation, verified Whisper conversion, native installers containing companion workers, license notices review, auto-download, streaming/persistent workers, job cancellation and benchmark parity are still required. No model weights bundled. Do not present this draft as production-ready.

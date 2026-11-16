@@ -10,6 +10,9 @@ on:
         description: Build unsigned desktop packages
 permissions:
   contents: read
+concurrency:
+  group: turkish-stt-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   companion:
     strategy:
@@ -24,7 +27,7 @@ jobs:
       - name: Test registry and adapter dispatch without model weights
         run: python -m unittest discover -s extras/turkish-stt -p "test_*.py"
   desktop:
-    if: github.event_name == 'workflow_dispatch' && inputs.build_desktop
+    if: github.event_name == 'push' || inputs.build_desktop
     needs: companion
     uses: ./.github/workflows/build-desktop.yml
     with:
@@ -34,7 +37,7 @@ jobs:
       test-build: true
       artifact-prefix: turkish-stt
   macos:
-    if: github.event_name == 'workflow_dispatch' && inputs.build_desktop
+    if: github.event_name == 'push' || inputs.build_desktop
     needs: companion
     runs-on: macos-26
     timeout-minutes: 120
@@ -64,3 +67,29 @@ jobs:
         with:
           name: turkish-stt-macos-arm64
           path: ${{ runner.temp }}/macos
+  sherpa-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: windows-latest
+            target: windows-x64
+          - os: windows-11-arm
+            target: windows-arm64
+          - os: macos-26
+            target: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build and load native CPU worker
+        run: python extras/turkish-stt/native/build.py --target ${{ matrix.target }} --output native-dist
+      - uses: ./.github/release/upload
+        with:
+          name: turkish-stt-sherpa-${{ matrix.target }}
+          path: native-dist

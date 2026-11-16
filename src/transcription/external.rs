@@ -74,7 +74,8 @@ fn read_registration(id: ExternalModelId) -> Result<Registration> {
 pub fn registered(id: ExternalModelId) -> bool { read_registration(id).is_ok() }
 
 pub fn register(id: ExternalModelId, executable: &Path, args: Vec<String>, python: bool) -> Result<()> {
-    let executable = fs::canonicalize(executable)?;
+    // Preserve virtualenv interpreter symlinks; resolving them loses the venv.
+    let executable = std::path::absolute(executable)?;
     if !executable.is_file() { bail!("Expected an executable file"); }
     let path = registration_path(id)?;
     fs::create_dir_all(path.parent().ok_or_else(|| eyre!("Missing model directory"))?)?;
