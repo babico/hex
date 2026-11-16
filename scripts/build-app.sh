@@ -110,17 +110,17 @@ sign "$bundle/Contents/Library/HexMicrophone.driver"
 # entitlement; anything it touches is attributed to Hex, its responsible
 # process.
 sign --identifier "$bundle_id.scrawl-helper" "$bundle/Contents/MacOS/scrawl-helper"
-if [[ -n "${HEX_TURKISH_STT_DIR:-}" ]]; then
+if [ -n "${HEX_TURKISH_STT_DIR:-}" ]; then
   native="$bundle/Contents/MacOS/turkish-stt"
   mkdir -p "$native"
   cp -R "$HEX_TURKISH_STT_DIR/." "$native/"
   chmod +x "$native/hex-sherpa-worker"
   for dylib in "$native"/*.dylib; do
-    [[ -f "$dylib" ]] || continue
+    [ -f "$dylib" ] || continue
     sign "$dylib"
   done
   sign "$native/hex-sherpa-worker"
-  "$native/hex-sherpa-worker" --help
+  "$native/hex-sherpa-worker" --help >&2
 fi
 sign --entitlements "$root/.github/release/hex.entitlements" "$bundle"
 codesign --verify --deep --strict --verbose=2 "$bundle"

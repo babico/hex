@@ -133,7 +133,7 @@ jobs:
           - target: linux-x64
             desktop: linux-x86_64
           - target: linux-arm64
-            desktop: linux-arm64
+            desktop: linux-aarch64
           - target: windows-x64
             desktop: windows-x86_64
           - target: windows-arm64
