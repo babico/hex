@@ -38,7 +38,7 @@ jobs:
       artifact-prefix: turkish-stt
   macos:
     if: github.event_name == 'push' || inputs.build_desktop
-    needs: companion
+    needs: [companion, sherpa-native]
     runs-on: macos-26
     timeout-minutes: 120
     env:
@@ -55,11 +55,15 @@ jobs:
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
       - name: Install Metal toolchain
         run: xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-sherpa-macos-arm64
+          path: ${{ runner.temp }}/native-stt
       - name: Build unsigned app and DMG
         run: |
           scripts/setup.sh
           scripts/set-crate-version.sh "$PWD" "$HEX_VERSION"
-          bundle=$(HEX_RELEASE_UNSIGNED=1 scripts/build-app.sh)
+          bundle=$(HEX_TURKISH_STT_DIR="$RUNNER_TEMP/native-stt" HEX_RELEASE_UNSIGNED=1 scripts/build-app.sh)
           mkdir -p "$RUNNER_TEMP/macos"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$bundle" "$RUNNER_TEMP/macos/Hex.app.zip"
           hdiutil create -volname "Hex Turkish STT" -srcfolder "$bundle" -ov -format UDZO "$RUNNER_TEMP/macos/Hex.dmg"
@@ -93,3 +97,62 @@ jobs:
         with:
           name: turkish-stt-sherpa-${{ matrix.target }}
           path: native-dist
+
+  native-inference:
+    needs: sherpa-native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [seda-v2, seda-tiny, ufakzeka-kulak]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-sherpa-linux-x64
+          path: native-dist
+      - name: Benchmark two real Turkish decodes in the same process
+        run: |
+          chmod +x native-dist/hex-sherpa-worker
+          python extras/turkish-stt/native/benchmark.py --worker native-dist/hex-sherpa-worker --model ${{ matrix.model }} --output metrics/result.json
+      - uses: ./.github/release/upload
+        if: success()
+        with:
+          name: turkish-stt-metrics-${{ matrix.model }}
+          path: metrics
+  portable:
+    needs: [desktop, sherpa-native]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            desktop: linux-x86_64
+          - target: linux-arm64
+            desktop: linux-arm64
+          - target: windows-x64
+            desktop: windows-x86_64
+          - target: windows-arm64
+            desktop: windows-aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-${{ matrix.desktop }}
+          path: desktop-dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-sherpa-${{ matrix.target }}
+          path: native-dist
+      - name: Combine executable and native runtime
+        run: python extras/turkish-stt/native/bundle.py --target ${{ matrix.target }} --desktop desktop-dist --native native-dist --output bundles
+      - uses: ./.github/release/upload
+        with:
+          name: turkish-stt-portable-${{ matrix.target }}
+          path: bundles
