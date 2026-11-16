@@ -867,7 +867,7 @@ fn transcription_action(
     };
     let model = crate::transcription::models::definition(selection.model);
     let prepared = match model.runtime {
-        crate::transcription::models::ModelRuntime::Gguf(_) => {
+        crate::transcription::models::ModelRuntime::Gguf(_) | crate::transcription::models::ModelRuntime::External => {
             crate::transcription::models::is_verified(model)
         }
         crate::transcription::models::ModelRuntime::AppleSpeech => {
@@ -1170,7 +1170,7 @@ fn stream_model_prepare(
     let preparer: ModelPreparer = Box::new(move |canceled, downloaded, stage| {
         if matches!(
             model.runtime,
-            crate::transcription::models::ModelRuntime::Gguf(_)
+            crate::transcription::models::ModelRuntime::Gguf(_) | crate::transcription::models::ModelRuntime::External
         ) {
             crate::transcription::models::download_with_stage_progress(
                 model,

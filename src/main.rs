@@ -304,6 +304,7 @@ fn turkish_stt_cli() -> Result<()> {
         return Ok(());
     }
     let args: Vec<_> = args.collect();
+    if transcription::external::cli(&args)? { std::process::exit(0); }
     let registry = include_str!("../extras/turkish-stt/models.json");
     if args.len() == 1 && args[0] == "list" {
         let registry: serde_json::Value = serde_json::from_str(registry)?;

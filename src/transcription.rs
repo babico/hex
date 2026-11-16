@@ -10,6 +10,7 @@ pub(crate) mod benchmark;
 pub(crate) mod cpu_floor;
 pub(crate) mod custom_models;
 pub(crate) mod engine;
+pub(crate) mod external;
 pub(crate) mod found_models;
 pub(crate) mod gguf_header;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -57,6 +58,7 @@ pub(crate) const UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES: usize = 6_400;
 pub enum Transcriber {
     Gguf(Box<Parakeet>),
     AppleSpeech(AppleSpeech),
+    External(external::ExternalRunner),
 }
 
 #[cfg(target_os = "macos")]
@@ -78,6 +80,7 @@ impl Transcriber {
                 .map(Box::new)
                 .map(Self::Gguf),
             ModelRuntime::AppleSpeech => AppleSpeech::load(selection).map(Self::AppleSpeech),
+            ModelRuntime::External => external::ExternalRunner::load(selection).map(Self::External),
         }
     }
 
@@ -85,6 +88,7 @@ impl Transcriber {
         match self {
             Self::Gguf(model) => model.matches_selection(selection),
             Self::AppleSpeech(model) => model.matches_selection(selection),
+            Self::External(model) => &model.selection == selection,
         }
     }
 
@@ -93,7 +97,7 @@ impl Transcriber {
     pub fn prewarm(&mut self) -> Result<()> {
         match self {
             Self::Gguf(model) => model.prewarm(),
-            Self::AppleSpeech(_) => Ok(()),
+            Self::AppleSpeech(_) | Self::External(_) => Ok(()),
         }
     }
 
@@ -106,6 +110,7 @@ impl Transcriber {
                 model.transcribe(&samples)
             }
             Self::AppleSpeech(model) => model.transcribe(&samples).map(|result| result.text),
+            Self::External(model) => model.transcribe(&samples),
         }
     }
 
@@ -140,6 +145,7 @@ impl Transcriber {
                     })
             }
             Self::AppleSpeech(model) => model.transcribe(&samples),
+            Self::External(model) => model.transcribe(&samples).map(|text| Transcript { text, ..Default::default() }),
         }
     }
 
@@ -153,6 +159,7 @@ impl Transcriber {
             }
             // Apple Speech segments the whole clip itself.
             Self::AppleSpeech(model) => model.transcribe(&samples),
+            Self::External(model) => model.transcribe(&samples).map(|text| Transcript { text, ..Default::default() }),
         }
     }
 
@@ -162,6 +169,7 @@ impl Transcriber {
         match self {
             Self::Gguf(model) => model.timestamps(),
             Self::AppleSpeech(_) => crate::transcription::transcript::TimestampLevel::Segment,
+            Self::External(_) => crate::transcription::transcript::TimestampLevel::None,
         }
     }
 }
@@ -203,6 +211,7 @@ impl WarmTranscriber {
     pub(crate) fn gguf_selection(&self) -> Option<&TranscriptionSelection> {
         match &self.active {
             Some(Transcriber::Gguf(model)) => model.selection(),
+            Some(Transcriber::External(model)) => Some(&model.selection),
             _ => None,
         }
     }

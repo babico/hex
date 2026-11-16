@@ -17,7 +17,8 @@ use crate::transcription::{pad_gguf_samples, trailing_silence_samples};
 pub type TimedSpan = (i64, i64, String);
 
 pub struct LocalTranscriber {
-    session: OfflineGgufSession,
+    session: Option<OfflineGgufSession>,
+    external: Option<super::external::ExternalRunner>,
     selection: TranscriptionSelection,
     options: RunOptions,
     device_label: String,
@@ -254,6 +255,22 @@ impl LocalTranscriber {
     /// or prewarm that fails retries on the CPU, and when the CPU works the
     /// GPU is remembered as failed.
     pub fn load(selection: &TranscriptionSelection) -> Result<Self> {
+        if matches!(validate(selection)?.runtime, super::models::ModelRuntime::External) {
+            return Ok(Self {
+                session: None,
+                external: Some(super::external::ExternalRunner::load(selection)?),
+                selection: selection.clone(),
+                options: RunOptions::default(),
+                device_label: "External local STT".into(),
+                max_audio_samples: None,
+                stream: None,
+                finest_timestamps: TimestampKind::None,
+                gpu: None,
+                preference: device(),
+                warm_ms: 0,
+                gpu_full: false,
+            });
+        }
         let loaded = Self::load_where(selection)?;
         gpu_health::set_auto_on_cpu(
             loaded.preference == TranscriptionDevice::Auto && loaded.gpu.is_none(),
@@ -381,7 +398,8 @@ impl LocalTranscriber {
         );
         let session = OfflineGgufSession::new(model)?;
         let mut transcriber = Self {
-            session,
+            session: Some(session),
+            external: None,
             selection: selection.clone(),
             options,
             device_label,
@@ -410,7 +428,7 @@ impl LocalTranscriber {
             "prewarmed local transcription model"
         );
         transcriber.stream = transcriber
-            .session
+            .session.as_mut().expect("GGUF session")
             .probe_stream(&transcriber.options, &architecture);
         // Warm now, so this times the device rather than its first run's
         // shader compiles.
@@ -427,7 +445,7 @@ impl LocalTranscriber {
     /// that is a warm model, not a failed device.
     fn warm_on_silence(&mut self) -> Result<()> {
         let run = |this: &mut Self| {
-            this.session
+            this.session.as_mut().expect("GGUF session")
                 .warm(&vec![0.0; PREWARM_SAMPLES], &this.options)
                 .map(drop)
                 .wrap_err("transcription failed")
@@ -471,7 +489,7 @@ impl LocalTranscriber {
         cancel: &transcribe_cpp::CancelToken,
         drive: impl FnOnce(&mut transcribe_cpp::Stream<'_>) -> R,
     ) -> transcribe_cpp::Result<R> {
-        self.session
+        self.session.as_mut().expect("GGUF session")
             .with_stream(&self.options, stream_options, cancel, drive)
     }
 
@@ -488,7 +506,7 @@ impl LocalTranscriber {
     /// Brings an idle model's weights back before audio arrives, as loading
     /// does; a model that ran recently is already warm.
     pub(crate) fn prewarm(&mut self) -> Result<()> {
-        if self.session.ran_recently() {
+        if self.external.is_some() || self.session.as_ref().is_some_and(|session| session.ran_recently()) {
             return Ok(());
         }
         self.warm_on_silence()
@@ -498,7 +516,7 @@ impl LocalTranscriber {
     /// Transcribes a complete 16 kHz clip, padded as a dictation's clip is:
     /// the minimum duration, then Unified English's trailing silence.
     pub(crate) fn transcribe_clip(&mut self, mut samples: Vec<f32>) -> Result<String> {
-        pad_gguf_samples(&mut samples, Some(self.model_id()));
+        if self.external.is_none() { pad_gguf_samples(&mut samples, Some(self.model_id())); }
         self.transcribe(&samples)
     }
 
@@ -509,18 +527,21 @@ impl LocalTranscriber {
         &mut self,
         mut samples: Vec<f32>,
     ) -> Result<crate::transcription::transcript::Transcript> {
+        if let Some(external) = &self.external {
+            return external.transcribe(&samples).map(|text| crate::transcription::transcript::Transcript { text, ..Default::default() });
+        }
         pad_gguf_samples(&mut samples, Some(self.model_id()));
         let options = RunOptions {
             timestamps: self.finest_timestamps,
             ..self.options.clone()
         };
         match self
-            .session
+            .session.as_mut().expect("GGUF session")
             .transcribe_chunked_timed(&samples, &options, self.max_audio_samples)
         {
             Err(error) if self.gpu_failed(&error) => {
                 self.recover_on_cpu(&error)?;
-                self.session
+                self.session.as_mut().expect("GGUF session")
                     .transcribe_chunked_timed(&samples, &options, self.max_audio_samples)
             }
             result => result,
@@ -560,12 +581,13 @@ impl LocalTranscriber {
         &mut self,
         mut samples: Vec<f32>,
     ) -> Result<crate::transcription::transcript::Transcript> {
-        crate::dictation::pad_for_parakeet(&mut samples);
+        if self.external.is_none() { crate::dictation::pad_for_parakeet(&mut samples); }
         self.timed(&samples)
     }
 
     /// Text, segments, and words, in chunks the model takes whole.
     fn timed(&mut self, samples: &[f32]) -> Result<crate::transcription::transcript::Transcript> {
+        if let Some(external) = &self.external { return external.transcribe(samples).map(|text| crate::transcription::transcript::Transcript { text, ..Default::default() }); }
         match self.timed_here(samples) {
             Err(error) if self.gpu_failed(&error) => {
                 self.recover_on_cpu(&error)?;
@@ -669,7 +691,7 @@ impl LocalTranscriber {
         for range in chunk_ranges(samples, chunk) {
             let offset = sample_offset_ms(range.start);
             let transcript = self
-                .session
+                .session.as_mut().expect("GGUF session")
                 .run(&samples[range], &options)
                 .wrap_err("transcription failed")?;
             let text = transcript.text.trim();
@@ -694,8 +716,9 @@ impl LocalTranscriber {
     }
 
     pub fn transcribe(&mut self, samples: &[f32]) -> Result<String> {
+        if let Some(external) = &self.external { return external.transcribe(samples); }
         let run = |this: &mut Self| {
-            this.session
+            this.session.as_mut().expect("GGUF session")
                 .transcribe_chunked(samples, &this.options, this.max_audio_samples)
         };
         match run(self) {

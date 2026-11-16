@@ -203,7 +203,7 @@ fn prepare_selection(
     };
     (|| -> color_eyre::Result<()> {
         let model = crate::transcription::models::validate(selection)?;
-        if matches!(model.runtime, ModelRuntime::Gguf(_)) {
+        if matches!(model.runtime, ModelRuntime::Gguf(_) | ModelRuntime::External) {
             if installed_only {
                 ModelPreparationStage::Verifying.store(stage);
                 crate::transcription::models::verify_installed(model, canceled)?;

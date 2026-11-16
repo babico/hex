@@ -953,7 +953,7 @@ pub(crate) fn held<'a>(
     #[cfg(target_os = "macos")]
     let model = model
         .active()
-        .filter(|model| matches!(model, crate::transcription::Transcriber::Gguf(_)))?;
+        .filter(|model| matches!(model, crate::transcription::Transcriber::Gguf(_) | crate::transcription::Transcriber::External(_)))?;
     model.matches_selection(selection).then_some(model)
 }
 

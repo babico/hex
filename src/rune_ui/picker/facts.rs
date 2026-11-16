@@ -202,6 +202,7 @@ pub(super) fn size_text(def: &ModelDefinition) -> String {
     match def.runtime {
         ModelRuntime::AppleSpeech => tr("Managed by macOS").into(),
         ModelRuntime::Gguf(_) => def.size_label(),
+        ModelRuntime::External => "External local STT".into(),
     }
 }
 
@@ -234,6 +235,7 @@ pub(super) fn blurb(def: &ModelDefinition) -> &'static str {
         M::NbWhisperMedium => tr("Whisper, tuned for Norwegian by its National Library"),
         M::GraniteSpeech5 => tr("IBM's model for seven languages, with punctuation"),
         M::AppleSpeech => tr("Apple's speech recognition, kept up to date by macOS"),
+        M::External(_) => "Experimental local backend; register with hex turkish-stt before choosing",
         M::Custom(_) => "",
     }
 }
