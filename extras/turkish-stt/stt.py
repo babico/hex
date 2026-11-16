@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Experimental local, whole-clip STT companion for Hex. No cloud inference."""
 import argparse
-import importlib
 import json
 import os
 from pathlib import Path
@@ -9,8 +8,10 @@ import subprocess
 import sys
 import wave
 
-ROOT = Path(__file__).resolve().parent
-MODELS = {m["id"]: m for m in json.loads((ROOT / "models.json").read_text(encoding="utf-8"))["models"]}
+REGISTRY = os.environ.get("HEX_TURKISH_STT_REGISTRY")
+if REGISTRY is None:
+    REGISTRY = Path(__file__).with_name("models.json").read_text(encoding="utf-8")
+MODELS = {m["id"]: m for m in json.loads(REGISTRY)["models"]}
 
 def samples(path):
     import numpy as np
@@ -30,15 +31,13 @@ def recognize(model, path, offline=False):
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
     if kind == "balbal":
         # Invoke the console entry point from this interpreter's installed package.
-        from importlib.metadata import entry_points
-        command = next(iter(entry_points(group="console_scripts", name="balbal")))
-        args = ["balbal", "run", "--json"]
+        args = ["run", "--json"]
         if model.get("variant"):
             args += ["--model", model["variant"]]
         args.append(str(path))
         # Capture the command's stdout; leave diagnostics on stderr.
         code = "from importlib.metadata import entry_points; next(iter(entry_points(group='console_scripts', name='balbal'))).load()()"
-        result = subprocess.run([sys.executable, "-c", code, *args[1:]], check=True, capture_output=True, text=True, encoding="utf-8")
+        result = subprocess.run([sys.executable, "-c", code, *args], check=True, capture_output=True, text=True, encoding="utf-8")
         response = json.loads(result.stdout)
         return response["text"]
     if kind == "mihu":
