@@ -38,3 +38,41 @@ class RegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PersistentTests(unittest.TestCase):
+    def test_balbal_loads_once_and_dispatches_correct_variant(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        import sys
+        fake = MagicMock()
+        fake.load.return_value.transcribe.return_value = {"text": "merhaba"}
+        with patch.dict(sys.modules, {"balbal": fake}):
+            for name, upstream in [("balbal-v2", "balbal-v2"), ("balbal-manas", "balbal-v2-manas")]:
+                fake.load.reset_mock()
+                runner = stt.load_runner(stt.MODELS[name], offline=True)
+                self.assertEqual(runner(Path("speech.wav")), "merhaba")
+                self.assertEqual(runner(Path("speech.wav")), "merhaba")
+                fake.load.assert_called_once_with(upstream)
+
+    def test_serve_one_load_for_multiple_clips_and_errors(self):
+        inp = io.StringIO("/tmp/a.wav\\n/tmp/b.wav\\n")
+        out = io.StringIO()
+        calls = []
+        def transcribe(path):
+            calls.append(str(path))
+            if len(calls) == 2:
+                raise ValueError("decode error")
+            return "İyi günler"
+        with patch.object(stt, "load_runner", return_value=transcribe) as loader:
+            self.assertEqual(stt.serve(stt.MODELS["balbal-v2"], True, inp, out), 0)
+            loader.assert_called_once()
+        messages = [json.loads(s) for s in out.getvalue().splitlines()]
+        self.assertEqual(messages, [{"ready": True}, {"text": "İyi günler"}, {"error": "decode error"}])
+        self.assertEqual(calls, ["/tmp/a.wav", "/tmp/b.wav"])
+
+    def test_download_dispatches_explicit_model_load(self):
+        out = io.StringIO()
+        with patch.object(stt, "load_runner") as loader, contextlib.redirect_stdout(out):
+            self.assertEqual(stt.main(["download", "balbal-v2"]), 0)
+            loader.assert_called_once_with(stt.MODELS["balbal-v2"], offline=False)
+        self.assertEqual(json.loads(out.getvalue()), {"model": "balbal-v2", "cached": True})

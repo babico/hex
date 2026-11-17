@@ -163,7 +163,7 @@ impl ExternalRunner {
     }
 
     pub fn prewarm(&self) -> Result<()> {
-        if self.config.managed_weights.is_none() { return Ok(()); }
+        if self.config.managed_weights.is_none() && !self.config.python { return Ok(()); }
         let mut guard = self.worker.lock().map_err(|_| eyre!("External worker lock poisoned"))?;
         if guard.as_mut().is_some_and(worker::Worker::running) { return Ok(()); }
         *guard = None;
@@ -184,7 +184,7 @@ impl ExternalRunner {
             writer.write_sample(sample)?;
         }
         writer.finalize()?;
-        if self.config.managed_weights.is_some() {
+        if self.config.managed_weights.is_some() || self.config.python {
             self.prewarm()?;
             let path = wav.to_str().ok_or_else(|| eyre!("Audio path must be UTF-8"))?;
             let mut guard = self.worker.lock().map_err(|_| eyre!("External worker lock poisoned"))?;

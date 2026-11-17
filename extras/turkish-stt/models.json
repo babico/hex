@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "models": [
-    {"id":"balbal-manas","name":"Balbal v2 Manas","repository":"erayyapagci/balbal-v2-manas","adapter":"balbal","variant":"manas","languages":["tr","en"],"dependencies":["balbal"]},
-    {"id":"balbal-v2","name":"Balbal v2","repository":"erayyapagci/balbal-v2","adapter":"balbal","languages":["tr"],"dependencies":["balbal"]},
+    {"id":"balbal-manas","name":"Balbal v2 Manas","repository":"erayyapagci/balbal-v2-manas","adapter":"balbal","variant":"manas","languages":["tr","en"],"dependencies":["balbal==0.6.3"]},
+    {"id":"balbal-v2","name":"Balbal v2","repository":"erayyapagci/balbal-v2","adapter":"balbal","languages":["tr"],"dependencies":["balbal==0.6.3"]},
     {"id":"mihu-v2","name":"Mihu AI STT v2","repository":"mihuai/turkish-stt-66m-v2","adapter":"mihu","languages":["tr"],"dependencies":["turkish-stt>=2,<3"]},
     {"id":"duyu-small","name":"Duyu Small","repository":"KaanAydinli/Duyu-small","adapter":"duyu","languages":["tr","en"],"dependencies":["numpy","onnxruntime","sentencepiece","huggingface_hub"]},
     {"id":"ufakzeka-kulak","name":"UfakZeka Kulak","repository":"ufakai/ufakzeka-kulak","adapter":"kulak","languages":["tr"],"dependencies":["sherpa-onnx","numpy","huggingface_hub"]},

@@ -39,3 +39,18 @@ Set HEX_STT_PYTHON to the virtual environment interpreter for companion CLI comm
 ## Build and validation
 
 The fork workflow builds unsigned desktop artifacts for Linux x64/ARM64, Windows x64/ARM64, macOS ARM64 and separate native worker bundles for all five. It reuses upstream build scripts but does not use upstream release service credentials. It runs on branch pushes. The registry/dispatch tests are mocked; worker smoke checks load the executable and call --help. The workflow now benchmarks two real Turkish decodes in the same process on Linux x64 for Seda v2, Seda Tiny and Kulak (FLEURS fixture, CC BY 4.0), records cold load, warm latency, WER and RTF, and builds combined portable archives on Linux and Windows plus a macOS app/DMG containing the worker. The Mihu benchmark is deliberately excluded from unattended downloads until license acceptance is handled. The fork desktop workflow now also includes the native runtime in Linux DEB/RPM and unsigned Windows installers; these paths must pass package CI before release. Conversion helper: `sh extras/turkish-stt/native/convert-whisper.sh turkmedstt /local/checkpoint /output` (also accepts `turkspeak-itu`); its output must be validated against the original model before publishing. Native Balbal/Duyu ports, end-to-end microphone tests, live partials, conversion verification, complete installer distribution and benchmark parity remain open. No model weights bundled. Do not present this draft as production-ready.
+
+## Vendor fallback (persistent Python worker)
+
+Vendor models now use the same line-delimited, bounded JSON worker protocol as native Sherpa. A registered Python virtual environment loads weights once and remains warm across dictation clips; if a worker errors or times out, Hex kills and resets it. First install the vendor adapter and **explicitly cache model weights** with the interpreter you intend to register:
+
+```sh
+python extras/turkish-stt/stt.py install balbal-manas
+python extras/turkish-stt/stt.py download balbal-manas
+hex turkish-stt register-python balbal-manas /absolute/path/to/venv/bin/python
+hex model use balbal-manas
+```
+
+The bundled script is embedded in Hex, so no repository checkout is required at runtime. On Windows specify `venv\\Scripts\\python.exe`. Balbal 0.6.3 has wheels for Linux x64, macOS ARM64 and Windows x64; other targets remain unsupported until native ports or compatible vendor wheels are available. Duyu requires author engine installation from a reviewed checkout and DUYU_SMALL_DIR; download alone is not a substitute. Whisper fallback requires PyTorch/Transformers and significant memory. A Python worker is a **vendor fallback**, not native inference. Model weights are never bundled into HEX installers.
+
+Cross-platform real-speech CI now runs Seda v2, Seda Tiny and Kulak on Linux x64/ARM64, Windows x64/ARM64 and macOS ARM64 rather than only Linux x64. A single fixture checks decoder correctness and repetition, not comprehensive WER parity.

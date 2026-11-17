@@ -21,7 +21,14 @@ impl Worker {
     pub(super) fn running(&mut self) -> bool { matches!(self.child.try_wait(), Ok(None)) }
     pub(super) fn spawn(config: &Registration, id: ExternalModelId, language: &str) -> Result<Self> {
         let mut command = Command::new(&config.executable);
-        command.args(&config.args).args(["--model", id.as_str(), "--language", language, "--serve", "1"]);
+        if config.python {
+            command.arg("-u").arg("-c").arg(include_str!("../../../extras/turkish-stt/stt.py"))
+                .args(["serve", id.as_str(), "--offline"])
+                .env("HEX_TURKISH_STT_REGISTRY", include_str!("../../../extras/turkish-stt/models.json"))
+                .env("PYTHONUTF8", "1");
+        } else {
+            command.args(&config.args).args(["--model", id.as_str(), "--language", language, "--serve", "1"]);
+        }
         #[cfg(windows)]
         { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
         let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
