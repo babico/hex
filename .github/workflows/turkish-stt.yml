@@ -224,6 +224,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $bin = Get-ChildItem desktop-dist -Recurse -Filter "hex-*-windows-$env:HEX_TEST_ARCH.com" | Select-Object -First 1
           if (-not $bin) { throw 'Cannot find hex.com console launcher' }
+          # The published console launcher is versioned for the artifact.
+          # Its bootstrap logic specifically looks for a sibling named hex.exe.
+          $exe = [System.IO.Path]::ChangeExtension($bin.FullName, '.exe')
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Cannot find matching hex.exe: $exe" }
+          $testBin = Join-Path $env:RUNNER_TEMP 'hex-ci-bin'
+          New-Item -ItemType Directory -Force -Path $testBin | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $testBin 'hex.exe')
+          Copy-Item -LiteralPath $bin.FullName -Destination (Join-Path $testBin 'hex.com')
+          $bin = Get-Item -LiteralPath (Join-Path $testBin 'hex.com')
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'hex-turkish-stt-local'
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'hex-turkish-stt-roaming'
           New-Item -ItemType Directory -Force $env:LOCALAPPDATA, $env:APPDATA | Out-Null
