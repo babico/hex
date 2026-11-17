@@ -106,6 +106,9 @@ jobs:
             python3 extras/turkish-stt/native/build.py --target "$TARGET" --output /work/native-dist
             /work/native-dist/hex-sherpa-worker --help
           '
+          # Docker writes root-owned output; the artifact upload action needs
+          # to generate its checksum manifest inside this directory.
+          sudo chown -R "$(id -u):$(id -g)" native-dist
       - name: Validate Debian 12 worker ABI
         if: startsWith(matrix.target, 'linux-')
         env:
