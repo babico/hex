@@ -797,16 +797,68 @@ fn offline_model(command: ModelCommand) -> u8 {
     })())
 }
 
-/// macOS runs models only inside the app.
+/// macOS GGUF inference remains inside the app's service. The registered
+/// external runtimes run as independent local processes and may also be
+/// checked/transcribed directly from the CLI without starting a second GGUF
+/// session or changing the app's existing ownership rules.
 #[cfg(target_os = "macos")]
-fn offline_model(_: ModelCommand) -> u8 {
-    print(
-        ControlReply::error(
-            "unsupported",
-            "this `hex model` command is for Linux and Windows; use `hex model list`",
+fn offline_model(command: ModelCommand) -> u8 {
+    use crate::transcription::models::{
+        ModelRuntime, TranscriptionSelection, definition, is_installed, is_verified, model_path,
+    };
+
+    fn external_selection(
+        model: Option<String>,
+        language: Option<String>,
+    ) -> color_eyre::Result<TranscriptionSelection> {
+        let selected = selection(model, language)?;
+        if !matches!(definition(selected.model).runtime, ModelRuntime::External) {
+            color_eyre::eyre::bail!(
+                "macOS runs GGUF transcription in Hex's embedded service; use `hex transcribe FILE --model MODEL`"
+            );
+        }
+        Ok(selected)
+    }
+
+    match command {
+        ModelCommand::Status { model, language } => report((|| {
+            let selected = external_selection(model, language)?;
+            let def = definition(selected.model);
+            let installed = is_installed(def, &selected.language);
+            println!(
+                "{}\\t{}\\t{}\\t{}",
+                if installed { "installed" } else { "missing" },
+                if installed && is_verified(def) { "verified" } else { "unverified" },
+                def.name,
+                model_path(def)?.display()
+            );
+            Ok(())
+        })()),
+        ModelCommand::Check { model, language } => report((|| {
+            let selected = external_selection(model, language)?;
+            let runner = crate::transcription::external::ExternalRunner::load(&selected)?;
+            runner.prewarm()?;
+            println!("ready\\tExternal local STT");
+            Ok(())
+        })()),
+        ModelCommand::Transcribe { wav, model, language } => report((|| {
+            let selected = external_selection(model, language)?;
+            println!(
+                "{}",
+                crate::transcription::local_transcriber::transcribe_wav_with_selection(
+                    &wav, &selected,
+                )?
+            );
+            Ok(())
+        })()),
+        _ => print(
+            ControlReply::error(
+                "unsupported",
+                "this `hex model` command is for Linux and Windows; use `hex model list`",
+            ),
+            Output::default(),
         ),
-        Output::default(),
-    )
+    }
 }
 
 /// The exit code of a command that runs here rather than in Hex.
