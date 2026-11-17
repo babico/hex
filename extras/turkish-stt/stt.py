@@ -110,6 +110,8 @@ def serve(model, offline=False, input_stream=None, output_stream=None):
     return 0
 
 def main(argv=None):
+    if hasattr(sys.stdout, "reconfigure") and sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list")
