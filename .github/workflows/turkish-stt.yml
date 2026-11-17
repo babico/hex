@@ -92,7 +92,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Build and load native CPU worker
+      # Build against the oldest supported Linux runtime (Debian 12, glibc
+      # 2.36 / libstdc++ 3.4.30), not the newer Ubuntu runner host.
+      - name: Build Linux native worker on Debian 12
+        if: startsWith(matrix.target, 'linux-')
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work -e TARGET debian:12 bash -euc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends ca-certificates python3 cmake g++ make >/dev/null
+            python3 extras/turkish-stt/native/build.py --target "$TARGET" --output /work/native-dist
+            /work/native-dist/hex-sherpa-worker --help
+          '
+      - name: Validate Debian 12 worker ABI
+        if: startsWith(matrix.target, 'linux-')
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -w /work debian:12 bash -euc '
+            /work/native-dist/hex-sherpa-worker --help
+            ldd /work/native-dist/hex-sherpa-worker
+          '
+      - name: Build Windows or macOS native worker
+        if: "!startsWith(matrix.target, 'linux-')"
         run: python extras/turkish-stt/native/build.py --target ${{ matrix.target }} --output native-dist
       - uses: ./.github/release/upload
         with:
