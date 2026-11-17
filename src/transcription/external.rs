@@ -281,7 +281,7 @@ mod tests {
                 assert_eq!(ExternalModelId::parse(id.as_str()), Some(id));
                 assert_eq!(model.id.as_str().parse::<super::super::models::TranscriptionModelId>().unwrap(), model.id);
                 assert!(model.supports_language("tr"));
-                assert!(!model.streams);
+                assert_eq!(model.streams, matches!(id, ExternalModelId::SedaV2 | ExternalModelId::SedaTiny | ExternalModelId::MihuV2));
             }
         }
         assert_eq!(count, 9);
