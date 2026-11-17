@@ -55,7 +55,7 @@ class PersistentTests(unittest.TestCase):
                 fake.load.assert_called_once_with(upstream)
 
     def test_serve_one_load_for_multiple_clips_and_errors(self):
-        inp = io.StringIO("/tmp/a.wav\\n/tmp/b.wav\\n")
+        inp = io.StringIO("/tmp/a.wav\n/tmp/b.wav\n")
         out = io.StringIO()
         calls = []
         def transcribe(path):
