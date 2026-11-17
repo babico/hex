@@ -200,7 +200,7 @@ jobs:
           source="https://raw.githubusercontent.com/atasoglu/seda/67fdbfc5e98919dbaecb8c7b63622b6d453c1c93/tests/data/speech.wav"
           with urllib.request.urlopen(source,timeout=120) as request:
               data=request.read(2_000_000)
-          assert hashlib.sha1(f"blob {len(data)}\\0".encode()+data).hexdigest() == "47ae56f2500f69d6d0e56d6e1b0f87c6967246fe"
+          assert hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest() == "47ae56f2500f69d6d0e56d6e1b0f87c6967246fe"
           Path(os.environ["RUNNER_TEMP"],"speech.wav").write_bytes(data)
           PY
           "$executable" turkish-stt list >/dev/null
