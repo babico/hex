@@ -169,6 +169,34 @@ jobs:
         with:
           name: turkish-stt-metrics-${{ runner.os }}-${{ runner.arch }}-${{ matrix.model }}
           path: metrics
+
+  vendor-balbal:
+    # Vendor package/weights are used solely for local inference tests, never
+    # bundled into releases; users must review the Balbal Community License.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [balbal-v2, balbal-manas]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Validate pinned Balbal vendor model with real Turkish speech
+        env:
+          PYTHONUTF8: "1"
+          TOKENIZERS_PARALLELISM: "false"
+        run: |
+          uv run --no-project --python 3.12 --with 'balbal==0.6.3' \
+            python extras/turkish-stt/native/benchmark_balbal.py --model ${{ matrix.model }} --output metrics/result.json
+      - uses: ./.github/release/upload
+        if: success()
+        with:
+          name: turkish-stt-metrics-${{ matrix.model }}
+          path: metrics
+
   vendor-duyu:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
