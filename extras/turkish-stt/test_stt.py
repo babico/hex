@@ -68,7 +68,7 @@ class PersistentTests(unittest.TestCase):
             loader.assert_called_once()
         messages = [json.loads(s) for s in out.getvalue().splitlines()]
         self.assertEqual(messages, [{"ready": True}, {"text": "İyi günler"}, {"error": "decode error"}])
-        self.assertEqual(calls, ["/tmp/a.wav", "/tmp/b.wav"])
+        self.assertEqual(calls, [str(Path("/tmp/a.wav")), str(Path("/tmp/b.wav"))])
 
     def test_download_dispatches_explicit_model_load(self):
         out = io.StringIO()
