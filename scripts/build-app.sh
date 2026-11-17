@@ -119,6 +119,12 @@ if [ -n "${HEX_TURKISH_STT_DIR:-}" ]; then
   if [ -d "$native/sdk-notices" ]; then
     mv "$native/sdk-notices" "$bundle/Contents/Resources/turkish-stt-notices"
   fi
+  # The artifact uploader adds SHA256SUMS to the download. It is build
+  # metadata, not executable code; placing it under Contents/MacOS makes
+  # Apple's nested-code signature validation reject the entire .app.
+  if [ -f "$native/SHA256SUMS" ]; then
+    mv "$native/SHA256SUMS" "$bundle/Contents/Resources/turkish-stt-SHA256SUMS"
+  fi
   # Third-party SDK archives contain both unsuffixed .dylib symlinks and
   # versioned Mach-O files. Signing "*.dylib" misses the real binaries.
   # Sign every regular Mach-O file, then the containing app, inside-out.
