@@ -1,5 +1,6 @@
 // Local, CPU-only worker using Sherpa's stable C ABI for every OS.
 #include "sherpa-onnx/c-api/c-api.h"
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -21,6 +22,7 @@ static std::string file(const fs::path &dir, const char *name) {
 class Recognizer {
     Handle<SherpaOnnxOnlineRecognizer, SherpaOnnxDestroyOnlineRecognizer> online{nullptr, SherpaOnnxDestroyOnlineRecognizer};
     Handle<SherpaOnnxOfflineRecognizer, SherpaOnnxDestroyOfflineRecognizer> offline{nullptr, SherpaOnnxDestroyOfflineRecognizer};
+    Handle<SherpaOnnxOnlineStream, SherpaOnnxDestroyOnlineStream> active{nullptr, SherpaOnnxDestroyOnlineStream};
     int padding = 16000;
 public:
     Recognizer(const std::string &id, fs::path dir, int threads) {
@@ -64,6 +66,58 @@ public:
             throw std::runtime_error("Unsupported model: " + id);
         }
     }
+    bool can_stream() const { return static_cast<bool>(online); }
+
+    std::string begin_stream() {
+        if (!online) throw std::runtime_error("The model does not support online partials");
+        active.reset(SherpaOnnxCreateOnlineStream(online.get()));
+        if (!active) throw std::runtime_error("Could not create live stream");
+        return "{\"text\":\"\"}";
+    }
+    std::string partial_result() {
+        if (!active) throw std::runtime_error("No live stream is active");
+        Handle<char, SherpaOnnxDestroyOnlineStreamResultJson> json(
+            SherpaOnnxGetOnlineStreamResultAsJson(online.get(), active.get()),
+            SherpaOnnxDestroyOnlineStreamResultJson);
+        if (!json) throw std::runtime_error("Missing streaming result");
+        return json.get();
+    }
+    std::string feed_stream(const std::string &hex) {
+        if (!active || hex.empty() || hex.size() > 131072 || hex.size() % 4 != 0)
+            throw std::runtime_error("Invalid live PCM16 chunk");
+        auto digit = [](char c)->unsigned {
+            if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+            if (c >= 'a' && c <= 'f') return static_cast<unsigned>(c - 'a' + 10);
+            if (c >= 'A' && c <= 'F') return static_cast<unsigned>(c - 'A' + 10);
+            throw std::runtime_error("Invalid PCM16 encoding");
+        };
+        std::vector<float> samples;
+        samples.reserve(hex.size() / 4);
+        for (size_t i = 0; i < hex.size(); i += 4) {
+            const uint16_t lo = static_cast<uint16_t>((digit(hex[i]) << 4) | digit(hex[i+1]));
+            const uint16_t hi = static_cast<uint16_t>((digit(hex[i+2]) << 4) | digit(hex[i+3]));
+            const uint16_t bits = static_cast<uint16_t>(lo | (hi << 8));
+            const int16_t signed_sample = static_cast<int16_t>(bits);
+            samples.push_back(static_cast<float>(signed_sample) / 32768.0f);
+        }
+        SherpaOnnxOnlineStreamAcceptWaveform(active.get(), 16000, samples.data(), static_cast<int32_t>(samples.size()));
+        while (SherpaOnnxIsOnlineStreamReady(online.get(), active.get()))
+            SherpaOnnxDecodeOnlineStream(online.get(), active.get());
+        return partial_result();
+    }
+    std::string finish_stream() {
+        if (!active) throw std::runtime_error("No live stream to finish");
+        const std::vector<float> silence(padding, 0.0f);
+        SherpaOnnxOnlineStreamAcceptWaveform(active.get(), 16000, silence.data(), padding);
+        SherpaOnnxOnlineStreamInputFinished(active.get());
+        while (SherpaOnnxIsOnlineStreamReady(online.get(), active.get()))
+            SherpaOnnxDecodeOnlineStream(online.get(), active.get());
+        const auto result = partial_result();
+        active.reset();
+        return result;
+    }
+    std::string abort_stream() { active.reset(); return "{\"text\":\"\"}"; }
+
     std::string decode(const std::string &path) {
         Handle<SherpaOnnxWave, SherpaOnnxFreeWave> wave(SherpaOnnxReadWave(path.c_str()), SherpaOnnxFreeWave);
         if (!wave || wave->sample_rate != 16000 || wave->num_samples <= 0 || wave->num_samples > 9600000)
@@ -120,8 +174,19 @@ int main(int argc, char **argv) {
             std::cout << "{\"ready\":true}" << std::endl;
             std::string path;
             while (std::getline(std::cin, path)) {
-                if (path.size() > 32768) throw std::runtime_error("Invalid path");
-                auto json = recognizer.decode(path);
+                std::string json;
+                if (path == "_HEX_BEGIN_") {
+                    json = recognizer.begin_stream();
+                } else if (path == "_HEX_END_") {
+                    json = recognizer.finish_stream();
+                } else if (path == "_HEX_ABORT_") {
+                    json = recognizer.abort_stream();
+                } else if (path.rfind("_HEX_PCM_", 0) == 0) {
+                    json = recognizer.feed_stream(path.substr(9));
+                } else {
+                    if (path.size() > 32768) throw std::runtime_error("Invalid path");
+                    json = recognizer.decode(path);
+                }
                 // Sherpa JSON may be pretty-printed. Strip line breaks (escaped
                 // line breaks within quoted values are unaffected).
                 for (auto &ch : json) if (ch == '\n' || ch == '\r') ch = ' ';

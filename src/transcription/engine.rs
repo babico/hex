@@ -529,7 +529,8 @@ impl PendingTranscript {
 
 impl TranscriptionEngine {
     pub fn start(model: Model) -> Result<Self> {
-        let streams = model.stream_options().is_some();
+        let streams = model.stream_options().is_some()
+            || model.external_runner().is_some_and(|runner| runner.can_stream());
         Self::with_model(Some(model), None, streams)
     }
 
@@ -1214,8 +1215,11 @@ impl Worker {
     /// the next capture still opens a stream (which reloads it).
     fn publish_streams(&self) {
         if let Some(model) = &self.model {
-            self.streams
-                .store(model.stream_options().is_some(), Ordering::Release);
+            self.streams.store(
+                model.stream_options().is_some() ||
+                model.external_runner().is_some_and(|runner| runner.can_stream()),
+                Ordering::Release,
+            );
         }
     }
 
@@ -1264,7 +1268,9 @@ impl Worker {
         let options = self
             .model()
             .and_then(|model| model.stream_options().cloned());
-        let Some(options) = options else {
+        let external = self.model().and_then(|model| model.external_runner())
+            .is_some_and(|runner| runner.can_stream());
+        if options.is_none() && !external {
             let loaded = self.model.is_some();
             let model_streams = self
                 .model
@@ -1302,20 +1308,26 @@ impl Worker {
             return;
         };
         let trailing_silence = stream_trailing_silence(model);
-        let ended = model.with_stream(&options, cancel, |stream| {
-            let mut capped = PauseCap::new(stream, trailing_silence);
-            let ended = drive_stream(
-                id,
-                &mut capped,
-                commands,
-                stalled,
-                partials,
-                next,
-                &mut stats,
-            );
-            stats.pauses_dropped_ms = capped.dropped / 16;
-            ended
-        });
+        let ended: Result<StreamEnd, String> = if external {
+            match model.external_runner().expect("checked external stream").begin_stream(cancel) {
+                Ok(mut stream) => {
+                    let mut capped = PauseCap::new(&mut stream, 0);
+                    let ended = drive_stream(id, &mut capped, commands, stalled, partials, next, &mut stats);
+                    stats.pauses_dropped_ms = capped.dropped / 16;
+                    Ok(ended)
+                }
+                Err(error) => Err(format!("{error:#}")),
+            }
+        } else {
+            model.with_stream(options.as_ref().expect("GGUF options"), cancel, |stream| {
+                let mut capped = PauseCap::new(stream, trailing_silence);
+                let ended = drive_stream(
+                    id, &mut capped, commands, stalled, partials, next, &mut stats,
+                );
+                stats.pauses_dropped_ms = capped.dropped / 16;
+                ended
+            }).map_err(|error| error.to_string())
+        };
         let FeedStats {
             feed_ms,
             feeds,
@@ -1379,12 +1391,10 @@ impl Worker {
         commands: &Receiver<Command>,
         next: &mut VecDeque<Command>,
     ) {
-        let Some(options) = self
-            .model()
-            .and_then(|model| model.stream_options().cloned())
-        else {
-            return;
-        };
+        let options = self.model().and_then(|model| model.stream_options().cloned());
+        let external = self.model().and_then(|model| model.external_runner())
+            .is_some_and(|runner| runner.can_stream());
+        if options.is_none() && !external { return; }
         if cancel.is_cancelled() {
             return;
         }
@@ -1392,9 +1402,16 @@ impl Worker {
         let Some(model) = self.model.as_mut() else {
             return;
         };
-        let ended = model.with_stream(&options, cancel, |stream| {
-            drive_yielding(id, stream, commands, yielding, next)
-        });
+        let ended: Result<Option<Command>, String> = if external {
+            match model.external_runner().expect("checked external stream").begin_stream(cancel) {
+                Ok(mut stream) => Ok(drive_yielding(id, &mut stream, commands, yielding, next)),
+                Err(error) => Err(format!("{error:#}")),
+            }
+        } else {
+            model.with_stream(options.as_ref().expect("GGUF options"), cancel, |stream| {
+                drive_yielding(id, stream, commands, yielding, next)
+            }).map_err(|error| error.to_string())
+        };
         match ended {
             Ok(Some(command)) => next.push_back(command),
             Ok(None) => {}

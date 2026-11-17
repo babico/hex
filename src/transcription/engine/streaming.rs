@@ -25,6 +25,18 @@ pub(super) trait StreamFeed {
     }
 }
 
+impl StreamFeed for crate::transcription::external::ExternalStream<'_> {
+    fn feed(&mut self, samples: &[f32]) -> Result<(), String> {
+        self.feed(samples).map_err(|error| format!("{error:#}"))
+    }
+    fn finalize(&mut self) -> Result<String, String> {
+        self.finish().map_err(|error| format!("{error:#}"))
+    }
+    fn partial(&self) -> Partial {
+        Partial { stable: String::new(), tentative: self.partial().to_owned() }
+    }
+}
+
 impl StreamFeed for transcribe_cpp::Stream<'_> {
     fn feed(&mut self, samples: &[f32]) -> Result<(), String> {
         transcribe_cpp::Stream::feed(self, samples)

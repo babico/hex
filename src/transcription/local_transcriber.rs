@@ -470,6 +470,9 @@ impl LocalTranscriber {
         }
     }
 
+    pub(crate) fn external_runner(&self) -> Option<&super::external::ExternalRunner> {
+        self.external.as_ref()
+    }
     pub(crate) fn stream_options(&self) -> Option<&transcribe_cpp::StreamOptions> {
         self.stream.as_ref()
     }

@@ -231,6 +231,13 @@ impl WarmTranscriber {
     }
 
     /// Stream options of the warm model, when it can stream on its device.
+    pub(crate) fn external_runner(&self) -> Option<&external::ExternalRunner> {
+        match &self.active {
+            Some(Transcriber::External(model)) => Some(model),
+            _ => None,
+        }
+    }
+
     pub(crate) fn stream_options(&self) -> Option<&transcribe_cpp::StreamOptions> {
         match &self.active {
             Some(Transcriber::Gguf(model)) => model.stream_options(),

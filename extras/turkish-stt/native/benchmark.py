@@ -105,13 +105,41 @@ def benchmark(args):
                 text = recv()["text"]
                 elapsed = time.perf_counter()-start
                 results.append({"text":text,"wer":wer(REF,text),"seconds":elapsed,"rtf":elapsed/duration})
+            if args.model in ("seda-v2", "seda-tiny"):
+                # True incremental Sherpa online decode: initial partials
+                # come from PCM16 chunks, not retranscribing whole WAVs.
+                import array
+                import sys
+                proc.stdin.write("_HEX_BEGIN_\n")
+                proc.stdin.flush()
+                assert recv()["text"] == ""
+                partials = []
+                with wave.open(str(wav)) as recording:
+                    while chunk := recording.readframes(4096):
+                        pcm = array.array("h")
+                        pcm.frombytes(chunk)
+                        # Preserve little-endian input when testing on any OS.
+                        if sys.byteorder != "little":
+                            pcm.byteswap()
+                        payload = b"".join(int(x).to_bytes(2, "little", signed=True) for x in pcm)
+                        proc.stdin.write("_HEX_PCM_" + payload.hex() + "\n")
+                        proc.stdin.flush()
+                        partials.append(recv()["text"])
+                proc.stdin.write("_HEX_END_\n")
+                proc.stdin.flush()
+                final = recv()["text"]
+                metrics_partial = {"partial_events": len(partials), "nonempty_partials": sum(bool(s.strip()) for s in partials), "final": final, "wer": wer(REF, final)}
+                if not final.strip() or wer(REF, final) > .8:
+                    raise RuntimeError("Incremental streaming decoder failed")
+            else:
+                metrics_partial = None
             proc.stdin.close()
             assert proc.wait(timeout=20)==0
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
-        metrics = {"model":args.model,"revision":revision,"reference":REF,"fixture":F,"attribution":"Google FLEURS, Turkish dev, CC BY 4.0","audio_seconds":duration,"cold_load_seconds":cold,"decodes":results}
+        metrics = {"model":args.model,"revision":revision,"reference":REF,"fixture":F,"attribution":"Google FLEURS, Turkish dev, CC BY 4.0","audio_seconds":duration,"cold_load_seconds":cold,"decodes":results,"streaming":metrics_partial}
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(metrics,ensure_ascii=False,indent=2),encoding="utf-8")
         print(json.dumps(metrics,ensure_ascii=False,indent=2))

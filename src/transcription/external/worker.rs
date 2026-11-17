@@ -61,10 +61,45 @@ impl Worker {
             }
         }
     }
-    pub(super) fn request(&mut self, path: &str) -> Result<String> {
-        if path.contains(['\n', '\r']) || path.len() > 32768 { bail!("Invalid audio path"); }
-        writeln!(self.input, "{path}")?;
+    fn exchange(&mut self, message: &str, timeout: Duration, cancel: Option<&transcribe_cpp::CancelToken>) -> Result<String> {
+        if message.contains(['\n','\r']) || message.len() > 131100 { bail!("Invalid worker message"); }
+        writeln!(self.input, "{message}")?;
         self.input.flush()?;
-        text(&self.receive(Duration::from_secs(120))?)
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancel.is_some_and(|token| token.is_cancelled()) { bail!("Live STT canceled"); }
+            if crate::transcription::gguf_session::job_cancel().is_some_and(|token| token.is_cancelled()) { bail!("STT canceled"); }
+            if Instant::now() >= deadline { bail!("External worker timed out"); }
+            match self.output.recv_timeout(Duration::from_millis(25)) {
+                Ok(bytes) => return text(&bytes),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => bail!("External worker exited"),
+            }
+        }
+    }
+
+    pub(super) fn request(&mut self, path: &str) -> Result<String> {
+        if path.len() > 32768 { bail!("Invalid audio path"); }
+        self.exchange(path, Duration::from_secs(120), None)
+    }
+
+    pub(super) fn start_live(&mut self, cancel: &transcribe_cpp::CancelToken) -> Result<()> {
+        self.exchange("_HEX_BEGIN_", Duration::from_secs(15), Some(cancel)).map(drop)
+    }
+    pub(super) fn feed_live(&mut self, samples: &[f32], cancel: &transcribe_cpp::CancelToken) -> Result<String> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut encoded = String::with_capacity(samples.len() * 4 + 9);
+        encoded.push_str("_HEX_PCM_");
+        for x in samples {
+            let value = if x.is_finite() { (*x * 32768.0).clamp(-32768.0, 32767.0) as i16 } else { 0 };
+            for byte in value.to_le_bytes() {
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 15) as usize] as char);
+            }
+        }
+        self.exchange(&encoded, Duration::from_secs(30), Some(cancel))
+    }
+    pub(super) fn end_live(&mut self, cancel: &transcribe_cpp::CancelToken) -> Result<String> {
+        self.exchange("_HEX_END_", Duration::from_secs(120), Some(cancel))
     }
 }

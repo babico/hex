@@ -154,7 +154,53 @@ impl Drop for Scratch {
     fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
 }
 
+pub struct ExternalStream<'a> {
+    parent: &'a ExternalRunner,
+    cancel: transcribe_cpp::CancelToken,
+    partial: String,
+    complete: bool,
+}
+impl ExternalStream<'_> {
+    pub fn feed(&mut self, samples: &[f32]) -> Result<()> {
+        for chunk in samples.chunks(4096) {
+            if self.cancel.is_cancelled() { bail!("Live transcription canceled"); }
+            let mut guard = self.parent.worker.lock().map_err(|_| eyre!("External STT lock poisoned"))?;
+            let answer = guard.as_mut().ok_or_else(|| eyre!("External STT worker disappeared"))?.feed_live(chunk, &self.cancel);
+            if answer.is_err() { *guard = None; }
+            self.partial = answer?;
+        }
+        Ok(())
+    }
+    pub fn finish(&mut self) -> Result<String> {
+        let mut guard = self.parent.worker.lock().map_err(|_| eyre!("External STT lock poisoned"))?;
+        let answer = guard.as_mut().ok_or_else(|| eyre!("External STT worker disappeared"))?.end_live(&self.cancel);
+        if answer.is_err() { *guard = None; }
+        self.complete = true;
+        answer
+    }
+    pub fn partial(&self) -> &str { &self.partial }
+}
+impl Drop for ExternalStream<'_> {
+    fn drop(&mut self) {
+        // Incomplete streams are never shared with the next recording.
+        if !self.complete && let Ok(mut guard) = self.parent.worker.lock() { *guard = None; }
+    }
+}
+
 impl ExternalRunner {
+    pub fn can_stream(&self) -> bool {
+        self.config.managed_weights.is_some()
+            && matches!(self.id, ExternalModelId::SedaV2 | ExternalModelId::SedaTiny | ExternalModelId::MihuV2)
+    }
+    pub fn begin_stream(&self, cancel: &transcribe_cpp::CancelToken) -> Result<ExternalStream<'_>> {
+        if !self.can_stream() { bail!("This external backend cannot stream"); }
+        self.prewarm()?;
+        let mut guard = self.worker.lock().map_err(|_| eyre!("External STT lock poisoned"))?;
+        let started = guard.as_mut().ok_or_else(|| eyre!("External STT worker disappeared"))?.start_live(cancel);
+        if started.is_err() { *guard = None; }
+        started?;
+        Ok(ExternalStream { parent: self, cancel: cancel.clone(), partial: String::new(), complete: false })
+    }
     pub fn load(selection: &TranscriptionSelection) -> Result<Self> {
         let super::models::TranscriptionModelId::External(id) = selection.model else { bail!("Expected external STT model"); };
         let config = read_registration(id)?;
