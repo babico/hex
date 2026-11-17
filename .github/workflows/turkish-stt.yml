@@ -197,6 +197,21 @@ jobs:
           name: turkish-stt-metrics-${{ matrix.model }}
           path: metrics
 
+  whisper-tokenizer:
+    # An authentic checkpoint conversion prerequisite test: fetch only
+    # public tokenizer metadata, never 3+ GB of weights or remote code.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Generate and validate real Turkish Whisper tokenizer metadata
+        run: |
+          uv run --no-project --python 3.12 --with 'transformers==5.6.1' --with 'huggingface-hub>=0.30' \
+            python extras/turkish-stt/native/test_actual_whisper_tokenizer.py
+
   vendor-duyu:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
