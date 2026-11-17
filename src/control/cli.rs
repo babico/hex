@@ -843,12 +843,27 @@ fn offline_model(command: ModelCommand) -> u8 {
         })()),
         ModelCommand::Transcribe { wav, model, language } => report((|| {
             let selected = external_selection(model, language)?;
-            println!(
-                "{}",
-                crate::transcription::local_transcriber::transcribe_wav_with_selection(
-                    &wav, &selected,
-                )?
-            );
+            // LocalTranscriber is Linux/Windows-only. Keep the macOS GGUF
+            // path inside its service and decode only the external worker's
+            // standard 16 kHz mono PCM16 WAV protocol here.
+            let mut audio = hound::WavReader::open(&wav)?;
+            let spec = audio.spec();
+            if spec.sample_rate != 16_000
+                || spec.channels != 1
+                || spec.bits_per_sample != 16
+                || spec.sample_format != hound::SampleFormat::Int
+            {
+                color_eyre::eyre::bail!(
+                    "external model CLI expects a mono 16 kHz PCM16 WAV; use `hex transcribe FILE --model MODEL` for other audio"
+                );
+            }
+            let samples = audio.samples::<i16>()
+                .map(|sample| sample.map(|value| f32::from(value) / 32768.0))
+                .collect::<Result<Vec<_>, _>>()?;
+            if samples.is_empty() { color_eyre::eyre::bail!("WAV has no samples"); }
+            let runner = crate::transcription::external::ExternalRunner::load(&selected)?;
+            runner.prewarm()?;
+            println!("{}", runner.transcribe(&samples)?);
             Ok(())
         })()),
         _ => print(
