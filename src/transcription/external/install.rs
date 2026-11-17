@@ -23,7 +23,7 @@ fn source(id: ExternalModelId) -> Option<(&'static str, &'static str, &'static [
 
 pub(crate) fn supported(id: ExternalModelId) -> bool { source(id).is_some() }
 
-fn worker() -> Result<PathBuf> {
+pub(super) fn worker() -> Result<PathBuf> {
     let name = if cfg!(windows) { "hex-sherpa-worker.exe" } else { "hex-sherpa-worker" };
     let exe = std::env::current_exe()?;
     let mut paths = vec![exe.parent().ok_or_else(|| eyre!("No executable directory"))?.join("turkish-stt").join(name)];

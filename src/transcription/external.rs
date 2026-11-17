@@ -65,10 +65,26 @@ pub fn registration_path(id: ExternalModelId) -> Result<PathBuf> {
     Ok(super::models::models_dir()?.join("external").join(format!("{}.json", id.as_str())))
 }
 
+/// A managed model's weights outlive an app version. Windows installs each
+/// update under versions/VERSION, so the old worker path must not be the source
+/// of truth once a newer signed/bundled worker is available.
+fn refresh_managed_executable(registration: &mut Registration, worker: Option<PathBuf>) {
+    if registration.managed_weights.is_some() {
+        if let Some(path) = worker.filter(|path| path.is_absolute() && path.is_file()) {
+            registration.executable = path;
+        }
+    }
+}
+
 fn read_registration(id: ExternalModelId) -> Result<Registration> {
     let bytes = fs::read(registration_path(id)?)
         .wrap_err_with(|| format!("Register {} first: hex turkish-stt register-python {} /absolute/path/to/python", id.as_str(), id.as_str()))?;
-    let config: Registration = serde_json::from_slice(&bytes)?;
+    let mut config: Registration = serde_json::from_slice(&bytes)?;
+    if config.managed_weights.is_some() {
+        // Supports both in-place updates and versioned installers. Do not
+        // reinterpret manually registered commands or Python venv symlinks.
+        refresh_managed_executable(&mut config, install::worker().ok());
+    }
     if !config.executable.is_absolute() || !config.executable.is_file() {
         bail!("External STT executable is missing or is not an absolute file path");
     }
@@ -272,6 +288,29 @@ impl ExternalRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn managed_registration_follows_app_upgrades_without_rebinding_user_commands() {
+        let current = std::env::current_exe().unwrap();
+        let stale = std::path::PathBuf::from("/removed-hex-version/hex-sherpa-worker");
+        let mut managed = Registration {
+            executable: stale.clone(),
+            args: vec![],
+            python: false,
+            managed_weights: Some(std::env::temp_dir()),
+        };
+        refresh_managed_executable(&mut managed, Some(current.clone()));
+        assert_eq!(managed.executable, current);
+
+        let mut manually_registered = Registration {
+            executable: stale.clone(),
+            args: vec!["--weights".into(), "my-own-model".into()],
+            python: false,
+            managed_weights: None,
+        };
+        refresh_managed_executable(&mut manually_registered, Some(current));
+        assert_eq!(manually_registered.executable, stale);
+    }
+
     #[test]
     fn stable_ids() {
         let mut count = 0;

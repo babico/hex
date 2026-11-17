@@ -64,3 +64,13 @@ For TurkMed/TurkSpeak, the conversion script now labels the output as reference 
 ## Native incremental streaming (Seda + Mihu)
 
 The Sherpa worker now also accepts a bounded local control stream: `_HEX_BEGIN_`, `_HEX_PCM_<hex-encoded little-endian PCM16>`, `_HEX_END_`. Native Seda v2, Seda Tiny and Mihu online recognizers emit provisional text as soon as the decoder makes it available, then final text after end-of-input. The stream is integrated into HEX's existing live-text/partial infrastructure with cancellation and model switching; provisional text remains **tentative**, not a confirmed committed prefix. Kulak is an offline NeMo TDT model and continues using whole-clip inference, not misleading fake streaming. Python vendor engines also retain whole-clip semantics. The real-speech CI checks incremental decoder final text for both Seda models on five platforms. Do not enable this feature for models without validated online decoding support.
+
+## Versioned app updates
+
+Managed native models keep their immutable verified weights independently of
+the installed Hex executable version. On startup Hex locates the worker bundled
+with the **currently running** app instead of trusting the absolute path saved
+by an older Windows installer, macOS app, or Linux package. User-registered
+custom workers and Python virtual environments retain their exact executable
+paths and are never silently redirected. This fixes native model load failures
+when a previous app version directory is removed.

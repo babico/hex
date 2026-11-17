@@ -14,6 +14,10 @@ impl Drop for Worker {
 }
 pub(super) fn text(bytes: &[u8]) -> Result<String> {
     let result: serde_json::Value = serde_json::from_slice(bytes)?;
+    if let Some(error) = result.get("error").and_then(serde_json::Value::as_str) {
+        let detail: String = error.chars().filter(|c| !c.is_control()).take(512).collect();
+        bail!("External STT engine failed: {detail}");
+    }
     Ok(result.get("text").and_then(serde_json::Value::as_str)
         .ok_or_else(|| eyre!("External backend must return a JSON text field"))?.trim().to_owned())
 }
@@ -101,5 +105,18 @@ impl Worker {
     }
     pub(super) fn end_live(&mut self, cancel: &transcribe_cpp::CancelToken) -> Result<String> {
         self.exchange("_HEX_END_", Duration::from_secs(120), Some(cancel))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::text;
+
+    #[test]
+    fn vendor_errors_are_visible_without_leaking_control_characters() {
+        let error = text(br#"{"error":"missing vendor model cache"}"#).unwrap_err();
+        assert!(error.to_string().contains("missing vendor model cache"));
+        assert_eq!(text(br#"{"text":" Merhaba dünya "}"#).unwrap(), "Merhaba dünya");
+        assert!(text(br#"{"ready":true}"#).is_err());
     }
 }
