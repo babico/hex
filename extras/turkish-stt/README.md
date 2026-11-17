@@ -74,3 +74,7 @@ by an older Windows installer, macOS app, or Linux package. User-registered
 custom workers and Python virtual environments retain their exact executable
 paths and are never silently redirected. This fixes native model load failures
 when a previous app version directory is removed.
+
+## Local Whisper checkpoint compatibility
+
+The TurkMedSTT General Hugging Face repository provides `vocab.json` and `merges.txt` but not `tokenizer.json`, which the transcribe.cpp GGUF converter requires. `convert-whisper.sh` now stages the checkpoint outside the author's download directory and generates a fast tokenizer **offline** using the pinned Transformers conversion environment. The original 3 GB `model.safetensors` is linked rather than copied. Checkpoints must include merged Whisper encoder/decoder tensors; incomplete Git-LFS pointers and adapter-only LoRA weights are rejected. The actual 3 GB GGUF conversion and reference transcript parity are still unverified; this fixes prerequisite file preparation only.
