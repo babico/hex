@@ -8,6 +8,7 @@ import json
 import pathlib
 import queue
 import re
+import sys
 import subprocess
 import tempfile
 import threading
@@ -118,6 +119,8 @@ def benchmark(args):
             raise RuntimeError("Real speech or repeated decode smoke test failed")
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     p=argparse.ArgumentParser()
     p.add_argument("--worker",type=pathlib.Path,required=True)
     p.add_argument("--model",choices=MODELS,required=True)
