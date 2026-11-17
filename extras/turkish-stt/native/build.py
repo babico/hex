@@ -31,8 +31,27 @@ def main():
         with archive.open("rb") as data:
             if hashlib.file_digest(data, "sha256").hexdigest() != digest:
                 raise RuntimeError("Sherpa SDK integrity check failed")
+        destination = root / "sdk"
         with tarfile.open(archive, "r:bz2") as tar:
-            tar.extractall(root / "sdk", filter="data")
+            # Debian 12 ships Python 3.11 without tarfile's filter= option.
+            # Validate each archive path/link before extracting on older Python.
+            # Keep links: official SDK has versioned .so/.dylib symlinks.
+            base = destination.resolve()
+            for member in tar.getmembers():
+                target = (destination / member.name).resolve()
+                if not target.is_relative_to(base):
+                    raise RuntimeError("Unsafe SDK archive path")
+                if member.isdev() or member.isfifo():
+                    raise RuntimeError("Special files are not allowed in SDK archive")
+                if member.issym() or member.islnk():
+                    link = ((destination / member.name).parent / member.linkname
+                            if member.issym() else destination / member.linkname).resolve()
+                    if not link.is_relative_to(base):
+                        raise RuntimeError("Unsafe SDK archive link")
+            try:
+                tar.extractall(destination, filter="data")
+            except TypeError:
+                tar.extractall(destination)
         # Some official distributions omit headers. Always compile against
         # the vendored, version-matched C API instead of a C++ ABI.
         sdk_dirs = [p for p in (root / "sdk").iterdir() if p.is_dir() and (p / "lib").is_dir()]
