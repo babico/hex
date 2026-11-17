@@ -11,22 +11,31 @@ case "$1" in
   *) echo "unsupported model ID: $1" >&2; exit 2 ;;
 esac
 id=$1
+case "$id" in
+  turkmedstt) repo_id=turkmedstt/whisper-large-v3-turkish-general ;;
+  turkspeak-itu) repo_id=RsGoksel/turkspeak-lv3-ITU_Mainframe ;;
+esac
 checkpoint=$(CDPATH= cd -- "$2" && pwd)
 mkdir -p "$3"
 output=$(CDPATH= cd -- "$3" && pwd)
 test -f "$checkpoint/config.json"
 test -f "$checkpoint/tokenizer.json"
+test -f "$checkpoint/model.safetensors"
 for tool in git cmake uv; do command -v "$tool" >/dev/null; done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 git clone --no-checkout https://github.com/handy-computer/transcribe.cpp.git "$work/transcribe"
 git -C "$work/transcribe" checkout --detach adfc50210a3f026a655a3e19937d90ef2bf0728c
 cd "$work/transcribe"
-uv run --project scripts/envs/whisper scripts/convert-whisper.py "$checkpoint" "$output/$id-f16.gguf" --variant whisper-large-v3
+uv run --project scripts/envs/whisper scripts/convert-whisper.py "$checkpoint" "$output/$id-reference.gguf" --repo-id "$repo_id" --variant whisper-large-v3
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --target transcribe-quantize --parallel 4
 quantizer=$(find build -type f \( -name transcribe-quantize -o -name transcribe-quantize.exe \) | head -n 1)
 test -n "$quantizer"
-"$quantizer" "$output/$id-f16.gguf" "$output/$id-q8.gguf" --quant Q8_0
-echo "Converted: $output/$id-q8.gguf"
+"$quantizer" "$output/$id-reference.gguf" "$output/$id-Q8_0.gguf" --quant Q8_0
+echo "Converted: $output/$id-Q8_0.gguf"
+shasum -a 256 "$output/$id-Q8_0.gguf" > "$output/$id-Q8_0.gguf.sha256"
 echo "Import as a custom GGUF in Hex; compare with the original checkpoint before use."
+
+echo "To install for native inference after comparing transcripts:"
+echo "  hex model import '$output/$id-Q8_0.gguf' --name '$id'"

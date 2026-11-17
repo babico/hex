@@ -26,6 +26,9 @@ jobs:
           persist-credentials: false
       - name: Test registry and adapter dispatch without model weights
         run: python -m unittest discover -s extras/turkish-stt -p "test_*.py"
+      - name: Check offline Whisper conversion helper shell syntax
+        if: runner.os != 'Windows'
+        run: sh -n extras/turkish-stt/native/convert-whisper.sh
   desktop:
     if: github.event_name == 'push' || inputs.build_desktop
     needs: [companion, sherpa-native]
@@ -166,6 +169,82 @@ jobs:
         with:
           name: turkish-stt-metrics-${{ runner.os }}-${{ runner.arch }}-${{ matrix.model }}
           path: metrics
+  vendor-duyu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Run pinned Duyu engine with local ONNX weights and a real Turkish clip
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          uv run --no-project --with numpy --with onnxruntime --with sentencepiece --with huggingface_hub python extras/turkish-stt/native/benchmark_duyu.py
+      - uses: ./.github/release/upload
+        if: success()
+        with:
+          name: turkish-stt-metrics-duyu-small
+          path: metrics
+
+  native-windows-e2e:
+    needs: [desktop, sherpa-native]
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: x64
+            arch: x86_64
+          - os: windows-11-arm
+            label: arm64
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-windows-${{ matrix.arch }}
+          path: desktop-dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-sherpa-windows-${{ matrix.label }}
+          path: native-dist
+      - name: Run HEX native install + transcribe on Windows
+        shell: pwsh
+        env:
+          HEX_STT_NATIVE_DIR: ${{ github.workspace }}/native-dist
+          HEX_TEST_ARCH: ${{ matrix.label }}
+          PYTHONUTF8: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = Get-ChildItem desktop-dist -Recurse -Filter "hex-*-windows-$env:HEX_TEST_ARCH.com" | Select-Object -First 1
+          if (-not $bin) { throw 'Cannot find hex.com console launcher' }
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'hex-turkish-stt-local'
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'hex-turkish-stt-roaming'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA, $env:APPDATA | Out-Null
+          @'
+          import hashlib,os,urllib.request
+          from pathlib import Path
+          url="https://raw.githubusercontent.com/atasoglu/seda/67fdbfc5e98919dbaecb8c7b63622b6d453c1c93/tests/data/speech.wav"
+          with urllib.request.urlopen(url,timeout=120) as r: audio=r.read(2_000_000)
+          assert hashlib.sha1(f"blob {len(audio)}\\0".encode()+audio).hexdigest()=="47ae56f2500f69d6d0e56d6e1b0f87c6967246fe"
+          Path(os.environ["RUNNER_TEMP"],"speech.wav").write_bytes(audio)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify Turkish fixture' }
+          & $bin.FullName model install seda-tiny --language tr
+          if ($LASTEXITCODE -ne 0) { throw 'HEX native model install failed' }
+          & $bin.FullName model check seda-tiny --language tr
+          if ($LASTEXITCODE -ne 0) { throw 'HEX native model prewarm failed' }
+          $transcript = & $bin.FullName model transcribe "$env:RUNNER_TEMP/speech.wav" --model seda-tiny --language tr
+          if ($LASTEXITCODE -ne 0) { throw 'HEX model transcribe failed' }
+          Write-Host $transcript
+          if (($transcript.Trim().ToLowerInvariant().TrimEnd('.')) -ne 'bazı festivaller küçük çocuklu aileler için özel kamp alanlarına sahiptir') { throw 'Incorrect Turkish transcript' }
+
   native-hex-e2e:
     needs: [desktop, sherpa-native]
     runs-on: ubuntu-24.04
