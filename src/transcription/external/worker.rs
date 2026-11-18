@@ -8,6 +8,7 @@ pub(super) struct Worker {
     child: Child,
     input: ChildStdin,
     output: mpsc::Receiver<Vec<u8>>,
+    pcm_protocol: bool,
 }
 impl Drop for Worker {
     fn drop(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); }
@@ -48,9 +49,10 @@ impl Worker {
                 if tx.send(line).is_err() { break; }
             }
         });
-        let worker = Self { child, input, output };
+        let mut worker = Self { child, input, output, pcm_protocol: false };
         let ready: serde_json::Value = serde_json::from_slice(&worker.receive(Duration::from_secs(90))?)?;
         if ready.get("ready").and_then(serde_json::Value::as_bool) != Some(true) { bail!("External worker was not ready"); }
+        worker.pcm_protocol = ready.get("pcm_protocol").and_then(serde_json::Value::as_u64) == Some(1);
         Ok(worker)
     }
     fn receive(&self, timeout: Duration) -> Result<Vec<u8>> {
@@ -80,6 +82,36 @@ impl Worker {
                 Err(mpsc::RecvTimeoutError::Disconnected) => bail!("External worker exited"),
             }
         }
+    }
+
+    pub(super) fn supports_pcm(&self) -> bool { self.pcm_protocol }
+
+    /// Transfer a whole clip without a filesystem path. Windows temporary
+    /// directories may contain Turkish/Unicode names that a native C ABI
+    /// loader interpreting narrow strings cannot open. Bound each message
+    /// to 128 KiB and the full clip to ten minutes.
+    pub(super) fn request_pcm(&mut self, samples: &[f32]) -> Result<String> {
+        if !self.pcm_protocol { bail!("Installed Sherpa worker lacks PCM protocol; update the native bundle"); }
+        if samples.is_empty() || samples.len() > 16_000 * 600 {
+            bail!("PCM clip must contain 1-9,600,000 samples");
+        }
+        self.exchange("_HEX_CLIP_BEGIN_", Duration::from_secs(15), None)?;
+        for chunk in samples.chunks(32768) {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut encoded = String::with_capacity(chunk.len() * 4 + 14);
+            encoded.push_str("_HEX_CLIP_PCM_");
+            for sample in chunk {
+                let value = if sample.is_finite() {
+                    (*sample * 32768.0).clamp(-32768.0, 32767.0) as i16
+                } else { 0 };
+                for byte in value.to_le_bytes() {
+                    encoded.push(HEX[(byte >> 4) as usize] as char);
+                    encoded.push(HEX[(byte & 15) as usize] as char);
+                }
+            }
+            self.exchange(&encoded, Duration::from_secs(30), None)?;
+        }
+        self.exchange("_HEX_CLIP_END_", Duration::from_secs(120), None)
     }
 
     pub(super) fn request(&mut self, path: &str) -> Result<String> {

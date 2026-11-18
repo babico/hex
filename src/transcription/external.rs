@@ -236,6 +236,18 @@ impl ExternalRunner {
     pub fn transcribe(&self, samples: &[f32]) -> Result<String> {
         if samples.is_empty() { return Ok(String::new()); }
         if samples.len() > 16_000 * 600 { bail!("External STT clip exceeds ten minutes"); }
+        if self.config.managed_weights.is_some() {
+            self.prewarm()?;
+            let mut guard = self.worker.lock().map_err(|_| eyre!("External worker lock poisoned"))?;
+            let running = guard.as_mut().ok_or_else(|| eyre!("External worker missing"))?;
+            if running.supports_pcm() {
+                let result = running.request_pcm(samples);
+                if result.is_err() { *guard = None; }
+                return result;
+            }
+            // Older user-installed native bundles are still accepted via
+            // the original path protocol; upgrades use direct PCM.
+        }
         let scratch = Scratch::create()?;
         let wav = scratch.0.join("audio.wav");
         let response = scratch.0.join("result.json");
