@@ -70,6 +70,17 @@ class PersistentTests(unittest.TestCase):
         self.assertEqual(messages, [{"ready": True}, {"text": "İyi günler"}, {"error": "decode error"}])
         self.assertEqual(calls, [str(Path("/tmp/a.wav")), str(Path("/tmp/b.wav"))])
 
+    def test_missing_model_cache_surfaces_structured_prewarm_error(self):
+        inp = io.StringIO("/tmp/audio.wav\n")
+        out = io.StringIO()
+        with patch.object(stt, "load_runner", side_effect=FileNotFoundError(
+            "Turkish model weights are not cached"
+        )):
+            self.assertEqual(stt.serve(stt.MODELS["balbal-v2"], True, inp, out), 1)
+        self.assertEqual(json.loads(out.getvalue()), {
+            "ready": False, "error": "Turkish model weights are not cached"
+        })
+
     def test_download_dispatches_explicit_model_load(self):
         out = io.StringIO()
         with patch.object(stt, "load_runner") as loader, contextlib.redirect_stdout(out):
