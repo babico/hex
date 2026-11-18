@@ -110,3 +110,15 @@ extra unencrypted temporary WAV on disk. Maximum clip length remains 10 minutes,
 with 32,768-sample chunks; canceled or failed transfers kill/reset the worker. Native
 workers from older bundles retain the legacy on-disk fallback until upgraded; custom
 executables and registered Python engines retain their existing interface.
+
+## Remove managed models and reclaim disk space
+
+The model picker now supports removing a downloaded external model when it is
+not active or preparing. `hex turkish-stt remove MODEL` also removes managed
+Sherpa weights from the exact immutable revision folder under Hex's own model
+directory (after refusing symlinks, redirects and paths outside the owned tree).
+Manually registered weights, executables and Python virtual environments are
+**never** deleted; only their registration is forgotten. Use
+`hex turkish-stt unregister MODEL` to forget a registration without touching
+its managed weight files. If a model is still mapped or a download holds the
+lock, removal can fail safely; close the engine and retry.

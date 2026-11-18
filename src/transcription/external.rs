@@ -111,6 +111,19 @@ pub fn verify_registration(id: ExternalModelId, canceled: &std::sync::atomic::At
     if let Some(dir) = &config.managed_weights { install::verify(dir, Some(canceled))?; }
     registration_path(id)
 }
+/// Remove a registered model. Managed weights are deleted only when their
+/// revision directory is verified to be owned by Hex; user-provided
+/// executables, virtualenvs and manual weights are never deleted.
+pub fn remove(id: ExternalModelId) -> Result<()> {
+    let registration = registration_path(id)?;
+    if !registration.is_file() { return Ok(()); }
+    let config = read_registration(id)?;
+    if let Some(dir) = &config.managed_weights {
+        install::remove_managed(id, dir)?;
+    }
+    unregister(id)
+}
+
 pub fn unregister(id: ExternalModelId) -> Result<()> {
     match fs::remove_file(registration_path(id)?) {
         Ok(()) => Ok(()),
@@ -121,12 +134,18 @@ pub fn unregister(id: ExternalModelId) -> Result<()> {
 
 pub fn cli(args: &[OsString]) -> Result<bool> {
     let action = args.first().and_then(|a| a.to_str()).unwrap_or("");
-    if !matches!(action, "register" | "register-python" | "unregister" | "accept-license") { return Ok(false); }
+    if !matches!(action, "register" | "register-python" | "unregister" | "remove" | "accept-license") { return Ok(false); }
     let id = args.get(1).and_then(|a| a.to_str()).and_then(ExternalModelId::parse)
         .ok_or_else(|| eyre!("Unknown model; run hex turkish-stt list"))?;
     if action == "accept-license" {
         if args.len() != 2 { bail!("Usage: hex turkish-stt accept-license MODEL"); }
         install::accept_license(id)?;
+        return Ok(true);
+    }
+    if action == "remove" {
+        if args.len() != 2 { bail!("Usage: hex turkish-stt remove MODEL"); }
+        remove(id)?;
+        println!("Removed {} from Hex.", id.as_str());
         return Ok(true);
     }
     if action == "unregister" {

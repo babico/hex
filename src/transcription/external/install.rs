@@ -117,6 +117,64 @@ pub(crate) fn install(id: ExternalModelId, canceled: &AtomicBool, downloaded: &A
     registration_path(id)
 }
 
+/// Only the direct immutable revision subdirectory of Hex's own
+/// managed weight tree may be removed. Do not follow arbitrary registration
+/// paths or delete folders belonging to manually registered backends.
+fn owned_revision_dir(root: &Path, dir: &Path) -> bool {
+    let Some(revision) = dir.file_name().and_then(|name| name.to_str()) else { return false; };
+    dir.parent() == Some(root)
+        && revision.len() == 40
+        && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub(super) fn remove_managed(id: ExternalModelId, dir: &Path) -> Result<()> {
+    let root = models::models_dir()?.join("external").join("weights").join(id.as_str());
+    if !owned_revision_dir(&root, dir) {
+        bail!("Refusing to delete a weight directory outside Hex's managed model revision");
+    }
+    if fs::symlink_metadata(&root)?.file_type().is_symlink()
+        || fs::symlink_metadata(dir)?.file_type().is_symlink()
+    {
+        bail!("Refusing to follow symlinked native STT model directories");
+    }
+    let canonical_root = root.canonicalize()?;
+    if dir.canonicalize()?.parent() != Some(canonical_root.as_path()) {
+        bail!("Refusing to delete model weights outside Hex's managed folder");
+    }
+    // The same download lock prevents removing files during an install or
+    // verification. Keep it held while deleting the directory's contents.
+    let canceled = AtomicBool::new(false);
+    let lock = models::lock_downloads(dir, &canceled, || {})?;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy() == ".download.lock" { continue; }
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    drop(lock);
+    fs::remove_file(dir.join(".download.lock"))?;
+    fs::remove_dir(dir)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod remove_tests {
+    use super::*;
+    #[test]
+    fn only_exact_managed_revision_subdirectories_are_removable() {
+        let root = Path::new("models/external/weights/seda-tiny");
+        let revision = "a".repeat(40);
+        assert!(owned_revision_dir(root, &root.join(&revision)));
+        assert!(!owned_revision_dir(root, root));
+        assert!(!owned_revision_dir(root, &root.join("different")));
+        assert!(!owned_revision_dir(root, &root.join(&revision).join("nested")));
+        assert!(!owned_revision_dir(root, &root.join("..").join("elsewhere")));
+    }
+}
+
 pub(super) fn verify(dir: &Path, canceled: Option<&AtomicBool>) -> Result<()> {
     let receipt: Receipt = serde_json::from_slice(&fs::read(dir.join("receipt.json"))?)?;
     if receipt.files.is_empty() { bail!("Empty model receipt"); }

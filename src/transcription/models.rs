@@ -1092,7 +1092,7 @@ fn verify_installed_at(path: &Path, model: &ModelDefinition, canceled: &AtomicBo
 /// Deletes a downloaded model with its verification receipt and any partial
 /// download. Refuses instead of waiting while a download owns the directory.
 pub fn remove_installed(model: &ModelDefinition) -> Result<()> {
-    if let TranscriptionModelId::External(id) = model.id { return external::unregister(id); }
+    if let TranscriptionModelId::External(id) = model.id { return external::remove(id); }
     if let TranscriptionModelId::Custom(id) = model.id {
         return super::custom_models::remove(id);
     }
