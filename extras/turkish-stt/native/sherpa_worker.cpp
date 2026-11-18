@@ -257,7 +257,38 @@ public:
     }
 };
 
+#ifdef _WIN32
+#include <windows.h>
+
+// Microsoft CRT's narrow argv uses the current ANSI code page, which loses
+// Turkish characters on English Windows machines. Receive UTF-16 args and
+// convert to UTF-8 before passing paths to std::filesystem::u8path.
+static std::string utf8_arg(const wchar_t *wide) {
+    const int required = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                              wide, -1, nullptr, 0, nullptr, nullptr);
+    if (required <= 0) throw std::runtime_error("Invalid Windows command-line Unicode");
+    std::string value(static_cast<size_t>(required), '\0');
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1,
+                            value.data(), required, nullptr, nullptr))
+        throw std::runtime_error("Unable to encode Windows argument as UTF-8");
+    value.pop_back(); // remove NUL written by WideCharToMultiByte
+    return value;
+}
+#endif
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t **wide_argv) {
+    std::vector<std::string> utf8_arguments;
+    std::vector<char *> argv;
+    utf8_arguments.reserve(static_cast<size_t>(argc));
+    argv.reserve(static_cast<size_t>(argc));
+    for (int i = 0; i < argc; ++i) {
+        utf8_arguments.push_back(utf8_arg(wide_argv[i]));
+    }
+    for (auto &arg : utf8_arguments) argv.push_back(arg.data());
+#else
 int main(int argc, char **argv) {
+#endif
     try {
         if (argc == 2 && std::string(argv[1]) == "--help") {
             std::cout << "hex-sherpa-worker --weights DIR --model ID --language tr [--threads N] [--wav FILE | --serve 1]\n";
