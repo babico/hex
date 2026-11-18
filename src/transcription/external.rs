@@ -422,6 +422,13 @@ mod tests {
             remove(id).unwrap();
             assert!(!path.exists());
         }
+
+        let orphan = root.join("external/weights/seda-tiny").join("b".repeat(40));
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("encoder.int8.onnx.partial"), b"unfinished download").unwrap();
+        assert!(!registration_path(ExternalModelId::SedaTiny).unwrap().exists());
+        remove(ExternalModelId::SedaTiny).unwrap();
+        assert!(!orphan.exists(), "partial managed weights were not reclaimed");
     }
 
     #[test]
