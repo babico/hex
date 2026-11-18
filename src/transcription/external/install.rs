@@ -220,6 +220,45 @@ mod remove_tests {
         assert!(validate_receipt(&dir, &receipt).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn managed_verification_rejects_a_symlink_even_with_matching_contents() {
+        use std::os::unix::fs::symlink;
+        let mut nonce = [0_u8; 8];
+        getrandom::fill(&mut nonce).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "hex-stt-symlink-test-{:016x}", u64::from_le_bytes(nonce)
+        ));
+        let revision = "a".repeat(40);
+        let dir = root.join("external/weights/seda-tiny").join(&revision);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut files = Vec::new();
+        for name in SEDA {
+            let path = dir.join(name);
+            fs::write(&path, b"fixture-weights").unwrap();
+            files.push(Stored {
+                name: (*name).into(),
+                bytes: fs::metadata(&path).unwrap().len(),
+                sha256: models::sha256_hex(&path, None).unwrap(),
+            });
+        }
+        fs::write(
+            dir.join("receipt.json"),
+            serde_json::to_vec(&Receipt {
+                repo: "atasoglu/seda-v0.2-tiny".into(),
+                revision, files,
+            }).unwrap(),
+        ).unwrap();
+        verify(&dir, None).unwrap();
+        let target = root.join("outside");
+        fs::write(&target, b"fixture-weights").unwrap();
+        fs::remove_file(dir.join("tokens.txt")).unwrap();
+        symlink(&target, dir.join("tokens.txt")).unwrap();
+        assert!(verify(&dir, None).unwrap_err().to_string().contains("symlink"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn only_exact_managed_revision_subdirectories_are_removable() {
         let root = Path::new("models/external/weights/seda-tiny");
