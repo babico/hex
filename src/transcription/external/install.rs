@@ -132,10 +132,23 @@ pub(super) fn remove_managed(id: ExternalModelId, dir: &Path) -> Result<()> {
     if !owned_revision_dir(&root, dir) {
         bail!("Refusing to delete a weight directory outside Hex's managed model revision");
     }
-    if fs::symlink_metadata(&root)?.file_type().is_symlink()
-        || fs::symlink_metadata(dir)?.file_type().is_symlink()
-    {
-        bail!("Refusing to follow symlinked native STT model directories");
+    let root_info = match fs::symlink_metadata(&root) {
+        Ok(info) => info,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if root_info.file_type().is_symlink() || !root_info.is_dir() {
+        bail!("Refusing to follow an unsafe native STT model directory");
+    }
+    let dir_info = match fs::symlink_metadata(dir) {
+        Ok(info) => info,
+        // A deleted or interrupted old install should not prevent users from
+        // forgetting its stale registration after an app upgrade.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if dir_info.file_type().is_symlink() || !dir_info.is_dir() {
+        bail!("Refusing to follow an unsafe native STT model revision");
     }
     let canonical_root = root.canonicalize()?;
     if dir.canonicalize()?.parent() != Some(canonical_root.as_path()) {
