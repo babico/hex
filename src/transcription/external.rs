@@ -350,6 +350,47 @@ mod tests {
     }
 
     #[test]
+    fn removing_stale_registrations_does_not_require_old_executables_or_weights() {
+        struct Reset(std::path::PathBuf);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::super::models::set_test_models_dir(None);
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let mut nonce = [0_u8; 8];
+        getrandom::fill(&mut nonce).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "hex-stt-test-{:016x}", u64::from_le_bytes(nonce)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        super::super::models::set_test_models_dir(Some(root.clone()));
+        let _reset = Reset(root.clone());
+
+        for (id, managed_weights) in [
+            (ExternalModelId::BalbalV2, None),
+            (
+                ExternalModelId::SedaTiny,
+                Some(root.join("external/weights/seda-tiny").join("a".repeat(40))),
+            ),
+        ] {
+            let record = Registration {
+                executable: root.join("deleted-old-hex-worker"),
+                args: vec![],
+                python: false,
+                managed_weights,
+            };
+            let path = registration_path(id).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+            assert!(!registered(id));
+            remove(id).unwrap();
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
     fn stable_ids() {
         let mut count = 0;
         for model in super::super::models::MODELS {
