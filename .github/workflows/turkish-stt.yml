@@ -167,6 +167,12 @@ jobs:
       - name: Build Windows or macOS native worker
         if: "!startsWith(matrix.target, 'linux-')"
         run: python extras/turkish-stt/native/build.py --target ${{ matrix.target }} --output native-dist
+      - name: Native startup errors are machine-readable
+        shell: bash
+        run: |
+          binary=native-dist/hex-sherpa-worker
+          if [ "${{ runner.os }}" = "Windows" ]; then binary=native-dist/hex-sherpa-worker.exe; fi
+          python extras/turkish-stt/native/check_startup_error.py "$binary"
       - uses: ./.github/release/upload
         with:
           name: turkish-stt-sherpa-${{ matrix.target }}
