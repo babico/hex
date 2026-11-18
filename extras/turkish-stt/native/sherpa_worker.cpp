@@ -276,6 +276,20 @@ static std::string utf8_arg(const wchar_t *wide) {
 }
 #endif
 
+// Keep stdout a single JSON line even when native model initialization
+// fails. The Rust host can then display the actual missing/corrupt model
+// error instead of only "worker stopped". Preserve UTF-8 diagnostics.
+static std::string protocol_error(const std::string &message) {
+    std::string result = "{\"ready\":false,\"error\":\"";
+    for (const unsigned char ch : message) {
+        if (ch == '"' || ch == '\\') result += '\\';
+        if (ch >= 0x20 && ch != 0x7f) result += static_cast<char>(ch);
+        else result += ' ';
+    }
+    result += "\"}";
+    return result;
+}
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t **wide_argv) {
     std::vector<std::string> utf8_arguments;
@@ -289,6 +303,7 @@ int wmain(int argc, wchar_t **wide_argv) {
 #else
 int main(int argc, char **argv) {
 #endif
+    bool protocol_mode = false;
     try {
         if (argc == 2 && std::string(argv[1]) == "--help") {
             std::cout << "hex-sherpa-worker --weights DIR --model ID --language tr [--threads N] [--wav FILE | --serve 1]\n";
@@ -308,6 +323,7 @@ int main(int argc, char **argv) {
         if (threads < 1 || threads > 64) throw std::runtime_error("Expected 1-64 threads");
         const bool serve = args.count("--serve") && args.at("--serve") == "1";
         if (serve == bool(args.count("--wav"))) throw std::runtime_error("Choose --wav or --serve 1");
+        protocol_mode = serve;
         Recognizer recognizer(args.at("--model"), fs::u8path(args.at("--weights")), threads);
         if (serve) {
             // One input path per line; one JSON result per line. EOF destroys weights.
@@ -346,6 +362,7 @@ int main(int argc, char **argv) {
         }
         return 0;
     } catch (const std::exception &e) {
+        if (protocol_mode) std::cout << protocol_error(e.what()) << std::endl;
         std::cerr << e.what() << '\n';
         return 1;
     }
