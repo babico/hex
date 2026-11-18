@@ -193,6 +193,29 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
+    #[cfg(unix)]
+    #[test]
+    fn cancel_during_model_startup_terminates_the_worker() {
+        use super::{Worker, Registration, ExternalModelId};
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let canceled = Arc::new(AtomicBool::new(false));
+        let token = canceled.clone();
+        let handle = std::thread::spawn(move || {
+            let config = Registration {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "exec sleep 10".into()],
+                python: false,
+                managed_weights: None,
+            };
+            Worker::spawn(&config, ExternalModelId::SedaTiny, "tr", Some(&token))
+                .map(drop)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        canceled.store(true, Ordering::Release);
+        let error = handle.join().unwrap().unwrap_err();
+        assert!(error.to_string().contains("canceled"));
+    }
+
     #[test]
     fn a_blocked_worker_pipe_cannot_block_the_transcription_thread() {
         let (sender, _receiver) = mpsc::sync_channel(1);
