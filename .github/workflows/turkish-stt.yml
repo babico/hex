@@ -401,7 +401,17 @@ jobs:
 
   native-hex-e2e:
     needs: [desktop, sherpa-native]
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+            label: x64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            label: arm64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -409,11 +419,11 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: turkish-stt-linux-x86_64
+          name: turkish-stt-linux-${{ matrix.arch }}
           path: desktop-dist
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: turkish-stt-sherpa-linux-x64
+          name: turkish-stt-sherpa-linux-${{ matrix.label }}
           path: native-dist
       - name: Run HEX model install, load, transcribe and verify
         shell: bash
@@ -423,7 +433,7 @@ jobs:
           XDG_CONFIG_HOME: ${{ runner.temp }}/hex-test-config
         run: |
           set -euo pipefail
-          executable=$(find desktop-dist -type f -name 'hex-*-linux-x64' -print -quit)
+          executable=$(find desktop-dist -type f -name "hex-*-linux-${{ matrix.label }}" -print -quit)
           test -n "$executable"
           chmod +x "$executable" native-dist/hex-sherpa-worker
           mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME"
