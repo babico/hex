@@ -164,6 +164,27 @@ pub(super) fn remove_managed(id: ExternalModelId, dir: &Path) -> Result<()> {
 mod remove_tests {
     use super::*;
     #[test]
+    fn managed_receipts_must_match_the_repository_revision_and_required_files() {
+        let revision = "a".repeat(40);
+        let dir = Path::new("models/external/weights/seda-tiny").join(&revision);
+        let files = SEDA.iter().map(|name| Stored {
+            name: (*name).to_owned(), bytes: 42, sha256: "b".repeat(64),
+        }).collect();
+        let mut receipt = Receipt {
+            repo: "atasoglu/seda-v0.2-tiny".into(), revision: revision.clone(), files,
+        };
+        assert!(validate_receipt(&dir, &receipt).is_ok());
+        receipt.repo = "someone-else/model".into();
+        assert!(validate_receipt(&dir, &receipt).is_err());
+        receipt.repo = "atasoglu/seda-v0.2-tiny".into();
+        receipt.revision = "c".repeat(40);
+        assert!(validate_receipt(&dir, &receipt).is_err());
+        receipt.revision = revision;
+        receipt.files.pop();
+        assert!(validate_receipt(&dir, &receipt).is_err());
+    }
+
+    #[test]
     fn only_exact_managed_revision_subdirectories_are_removable() {
         let root = Path::new("models/external/weights/seda-tiny");
         let revision = "a".repeat(40);
@@ -175,9 +196,50 @@ mod remove_tests {
     }
 }
 
+/// A receipt must describe this model and immutable source revision, not
+/// simply contain hashes chosen by whoever last wrote receipt.json.
+fn validate_receipt(dir: &Path, receipt: &Receipt) -> Result<()> {
+    let id = dir.parent()
+        .and_then(Path::file_name)
+        .and_then(|part| part.to_str())
+        .and_then(ExternalModelId::parse)
+        .ok_or_else(|| eyre!("Invalid managed STT model directory"))?;
+    let (expected_repo, _, required) = source(id)
+        .ok_or_else(|| eyre!("Model has no managed download manifest"))?;
+    let revision = dir.file_name().and_then(|part| part.to_str())
+        .ok_or_else(|| eyre!("Missing model revision"))?;
+    if receipt.repo != expected_repo || receipt.revision != revision
+        || revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("Model receipt repository or revision mismatch");
+    }
+
+    let extras = ["README.md", "LICENSE", "ATTRIBUTION.md", "SHA256SUMS"];
+    let mut seen = std::collections::HashSet::new();
+    for file in &receipt.files {
+        if !required.contains(&file.name.as_str()) && !extras.contains(&file.name.as_str()) {
+            bail!("Unrecognized managed model file: {}", file.name);
+        }
+        if !seen.insert(file.name.as_str()) {
+            bail!("Duplicate managed model file: {}", file.name);
+        }
+        if file.bytes == 0 || file.bytes > 2_000_000_000 || file.sha256.len() != 64
+            || !file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!("Invalid managed model file metadata: {}", file.name);
+        }
+    }
+    for required_file in required {
+        if !seen.contains(required_file) {
+            bail!("Missing required managed model file: {required_file}");
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn verify(dir: &Path, canceled: Option<&AtomicBool>) -> Result<()> {
     let receipt: Receipt = serde_json::from_slice(&fs::read(dir.join("receipt.json"))?)?;
-    if receipt.files.is_empty() { bail!("Empty model receipt"); }
+    validate_receipt(dir, &receipt)?;
     for file in receipt.files {
         let relative = Path::new(&file.name);
         if !relative.components().all(|part| matches!(part, std::path::Component::Normal(_))) { bail!("Unsafe model path"); }
