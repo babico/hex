@@ -22,6 +22,19 @@ pub(super) fn text(bytes: &[u8]) -> Result<String> {
     Ok(result.get("text").and_then(serde_json::Value::as_str)
         .ok_or_else(|| eyre!("External backend must return a JSON text field"))?.trim().to_owned())
 }
+/// Parse the first bounded worker message, including model load failures.
+fn ready_response(bytes: &[u8]) -> Result<bool> {
+    let ready: serde_json::Value = serde_json::from_slice(bytes)?;
+    if ready.get("ready").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(ready.get("pcm_protocol").and_then(serde_json::Value::as_u64) == Some(1));
+    }
+    if let Some(error) = ready.get("error").and_then(serde_json::Value::as_str) {
+        let detail: String = error.chars().filter(|ch| !ch.is_control()).take(512).collect();
+        bail!("External STT model failed to load: {detail}");
+    }
+    bail!("External STT worker did not report readiness")
+}
+
 impl Worker {
     pub(super) fn running(&mut self) -> bool { matches!(self.child.try_wait(), Ok(None)) }
     pub(super) fn spawn(config: &Registration, id: ExternalModelId, language: &str) -> Result<Self> {
@@ -50,9 +63,7 @@ impl Worker {
             }
         });
         let mut worker = Self { child, input, output, pcm_protocol: false };
-        let ready: serde_json::Value = serde_json::from_slice(&worker.receive(Duration::from_secs(90))?)?;
-        if ready.get("ready").and_then(serde_json::Value::as_bool) != Some(true) { bail!("External worker was not ready"); }
-        worker.pcm_protocol = ready.get("pcm_protocol").and_then(serde_json::Value::as_u64) == Some(1);
+        worker.pcm_protocol = ready_response(&worker.receive(Duration::from_secs(90))?)?;
         Ok(worker)
     }
     fn receive(&self, timeout: Duration) -> Result<Vec<u8>> {
@@ -152,7 +163,7 @@ impl Worker {
 
 #[cfg(test)]
 mod tests {
-    use super::text;
+    use super::{ready_response, text};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -162,6 +173,17 @@ mod tests {
         assert_eq!(per_frame, total_deadline);
         let short_frame = total_deadline.min(Instant::now() + Duration::from_millis(30));
         assert!(short_frame <= total_deadline);
+    }
+
+    #[test]
+    fn model_load_errors_survive_prewarm_and_cap_diagnostics() {
+        assert_eq!(ready_response(br#"{"ready":true,"pcm_protocol":1}"#).unwrap(), true);
+        assert_eq!(ready_response(br#"{"ready":true}"#).unwrap(), false);
+        let error = ready_response(br#"{"ready":false,"error":"missing local model files"}"#).unwrap_err();
+        assert!(error.to_string().contains("missing local model files"));
+        assert!(ready_response(br#"{"ready":false}"#).is_err());
+        let error = ready_response(b"{not-json").unwrap_err();
+        assert!(!error.to_string().is_empty());
     }
 
     #[test]
