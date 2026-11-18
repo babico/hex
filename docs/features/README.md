@@ -68,8 +68,10 @@ models another app already downloaded; its Labs › Smaller model files toggle
 The [Turkish STT fork](../../extras/turkish-stt/README.md) introduces nine
 experimental model entries: four managed Sherpa-ONNX runtimes and five
 explicitly registered vendor/Python alternatives. Model preparation verifies
-the on-device artifacts; worker startup failures are reported without assuming
-the model is ready. Managed removal is safe after an app upgrade and refuses
+the on-device artifacts and, for managed/Python backends, proves worker
+startup before saving a new Linux or Windows selection. Startup failures and
+cancellations do not activate an unverified model. Managed removal is safe
+after an app upgrade and refuses
 symlinked model data. Cross-platform build and inference checks are in
 `.github/workflows/turkish-stt.yml`, but real microphone permission, complete
 accuracy validation and release signing remain unverified.
