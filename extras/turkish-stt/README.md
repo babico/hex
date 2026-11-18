@@ -135,3 +135,30 @@ if the source is on another drive, and cleans up on worker exit. If the user's
 TEMP itself contains Unicode, set `HEX_STT_ASCII_SCRATCH_DIR` to a writable
 ASCII-only path. Native five-platform tests intentionally load all three
 Sherpa models from a `Türkçe_Ağırlıklar` folder.
+
+## Worker recovery and managed-model integrity
+
+The native Sherpa worker and the optional persistent Python vendor worker return
+structured JSON errors when model initialization fails. Hex surfaces those
+errors in model preparation instead of just reporting that the worker vanished.
+A failed/canceled stream or clip disposes of the worker before another
+recording; backend errors do not silently reuse its decoder state.
+
+Native PCM frames pass through a one-slot writer queue, keeping a stuck child
+stdin pipe off Hex's transcription thread. Whole-clip requests use an **overall**
+deadline that scales with the audio duration (up to 25 minutes), rather than
+renewing an entire timeout for every PCM frame. Streaming still uses individual
+request deadlines. This is bounded recovery, not a guarantee that all hardware
+will decode ten-minute recordings within the allotted time.
+
+Managed weights require a receipt matching their source repository, immutable
+revision, exact required files, file sizes, and SHA-256 values. Download,
+verification and removal reject symlinked files/directories under the Hex-owned
+model tree rather than following paths outside it. Registration cleanup works
+even if the previous app worker, Python virtual environment, or model revision
+directory has already disappeared; manually supplied data is never deleted.
+
+The fork's CI additionally runs the `transcription::external` Rust unit tests
+on Linux, alongside the cross-platform Python/native checks and actual
+recorded-speech tests. A new test's presence alone is not proof of a passing CI
+run; inspect the current branch run before marking the feature complete.
