@@ -158,9 +158,9 @@ impl Worker {
         self.exchange_until("_HEX_CLIP_END_", deadline.min(Instant::now() + Duration::from_secs(120)), None)
     }
 
-    pub(super) fn request(&mut self, path: &str) -> Result<String> {
+    pub(super) fn request(&mut self, path: &str, timeout: Duration) -> Result<String> {
         if path.len() > 32768 { bail!("Invalid audio path"); }
-        self.exchange(path, Duration::from_secs(120), None)
+        self.exchange(path, timeout, None)
     }
 
     pub(super) fn start_live(&mut self, cancel: &transcribe_cpp::CancelToken) -> Result<()> {
