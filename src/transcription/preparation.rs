@@ -217,10 +217,17 @@ fn prepare_selection(
         check_canceled()?;
         ModelPreparationStage::Loading.store(stage);
         crate::transcription::speech_detector::prewarm();
-        // macOS warms the model to prove it loads. Windows and Linux load it
-        // once, when the listener restarts with the new selection.
+        // macOS already loads the chosen engine before committing the choice.
         #[cfg(target_os = "macos")]
         crate::transcription::Transcriber::load_selection(selection).map(drop)?;
+        // Linux/Windows normally load GGUF on listener restart; experimental
+        // native and vendor models must prove their worker loads first so an
+        // invalid registration never becomes the user's active selection.
+        #[cfg(not(target_os = "macos"))]
+        if matches!(model.runtime, ModelRuntime::External) {
+            crate::transcription::external::ExternalRunner::load(selection)?
+                .prewarm_preparation(canceled)?;
+        }
         check_canceled()
     })()
     // The chain reaches the controller's warning and the row's reason, so a
