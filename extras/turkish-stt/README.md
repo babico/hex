@@ -148,8 +148,10 @@ Native PCM frames pass through a one-slot writer queue, keeping a stuck child
 stdin pipe off Hex's transcription thread. Whole-clip requests use an **overall**
 deadline that scales with the audio duration (up to 25 minutes), rather than
 renewing an entire timeout for every PCM frame. Streaming still uses individual
-request deadlines. This is bounded recovery, not a guarantee that all hardware
-will decode ten-minute recordings within the allotted time.
+request deadlines. Vendor Python and older WAV-only workers have a
+separate duration-scaled timeout (up to 45 minutes) for slower inference.
+These bounded limits are not guarantees that all hardware will decode long
+recordings within the allotted time.
 
 Managed weights require a receipt matching their source repository, immutable
 revision, exact required files, file sizes, and SHA-256 values. Download,
@@ -157,6 +159,11 @@ verification and removal reject symlinked files/directories under the Hex-owned
 model tree rather than following paths outside it. Registration cleanup works
 even if the previous app worker, Python virtual environment, or model revision
 directory has already disappeared; manually supplied data is never deleted.
+On Linux and Windows, model selection now validates managed and Python
+worker initialization **before** saving the new choice; a canceled
+preparation terminates the loading child. macOS retains its existing
+pre-activation load check. WAV-only manually registered tools still
+require a real-audio check.
 
 The fork's CI additionally runs the `transcription::external` Rust unit tests
 on Linux, alongside the cross-platform Python/native checks and actual
