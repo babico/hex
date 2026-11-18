@@ -68,10 +68,16 @@ impl Worker {
         }
     }
     fn exchange(&mut self, message: &str, timeout: Duration, cancel: Option<&transcribe_cpp::CancelToken>) -> Result<String> {
+        self.exchange_until(message, Instant::now() + timeout, cancel)
+    }
+
+    /// Use an absolute deadline so long PCM clips cannot renew the full timeout
+    /// for every chunk. The per-frame limit is still applied by the caller.
+    fn exchange_until(&mut self, message: &str, deadline: Instant, cancel: Option<&transcribe_cpp::CancelToken>) -> Result<String> {
         if message.contains(['\n','\r']) || message.len() > 131100 { bail!("Invalid worker message"); }
+        if Instant::now() >= deadline { bail!("External worker timed out"); }
         writeln!(self.input, "{message}")?;
         self.input.flush()?;
-        let deadline = Instant::now() + timeout;
         loop {
             if cancel.is_some_and(|token| token.is_cancelled()) { bail!("Live STT canceled"); }
             if crate::transcription::gguf_session::job_cancel().is_some_and(|token| token.is_cancelled()) { bail!("STT canceled"); }
@@ -95,7 +101,11 @@ impl Worker {
         if samples.is_empty() || samples.len() > 16_000 * 600 {
             bail!("PCM clip must contain 1-9,600,000 samples");
         }
-        self.exchange("_HEX_CLIP_BEGIN_", Duration::from_secs(15), None)?;
+        // At most three minutes for the entire clip, including the final
+        // decode; never give each of the ~293 possible PCM frames a fresh
+        // 30-second budget.
+        let deadline = Instant::now() + Duration::from_secs(180);
+        self.exchange_until("_HEX_CLIP_BEGIN_", deadline.min(Instant::now() + Duration::from_secs(15)), None)?;
         for chunk in samples.chunks(32768) {
             const HEX: &[u8; 16] = b"0123456789abcdef";
             let mut encoded = String::with_capacity(chunk.len() * 4 + 14);
@@ -109,9 +119,9 @@ impl Worker {
                     encoded.push(HEX[(byte & 15) as usize] as char);
                 }
             }
-            self.exchange(&encoded, Duration::from_secs(30), None)?;
+            self.exchange_until(&encoded, deadline.min(Instant::now() + Duration::from_secs(30)), None)?;
         }
-        self.exchange("_HEX_CLIP_END_", Duration::from_secs(120), None)
+        self.exchange_until("_HEX_CLIP_END_", deadline.min(Instant::now() + Duration::from_secs(120)), None)
     }
 
     pub(super) fn request(&mut self, path: &str) -> Result<String> {
@@ -143,6 +153,16 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::text;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_clip_deadline_cannot_be_extended_by_per_frame_timeouts() {
+        let total_deadline = Instant::now() + Duration::from_secs(10);
+        let per_frame = total_deadline.min(Instant::now() + Duration::from_secs(30));
+        assert_eq!(per_frame, total_deadline);
+        let short_frame = total_deadline.min(Instant::now() + Duration::from_millis(30));
+        assert!(short_frame <= total_deadline);
+    }
 
     #[test]
     fn vendor_errors_are_visible_without_leaking_control_characters() {
