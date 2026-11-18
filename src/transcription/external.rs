@@ -259,11 +259,24 @@ impl ExternalRunner {
     }
 
     pub fn prewarm(&self) -> Result<()> {
+        self.prewarm_cancellable(None)
+    }
+
+    /// Used by Settings before committing a selection. Canceling a model
+    /// switch terminates an in-progress vendor/native model initialization.
+    pub fn prewarm_preparation(&self, canceled: &std::sync::atomic::AtomicBool) -> Result<()> {
+        self.prewarm_cancellable(Some(canceled))
+    }
+
+    fn prewarm_cancellable(&self, canceled: Option<&std::sync::atomic::AtomicBool>) -> Result<()> {
+        if canceled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            bail!("External STT model preparation canceled");
+        }
         if self.config.managed_weights.is_none() && !self.config.python { return Ok(()); }
         let mut guard = self.worker.lock().map_err(|_| eyre!("External worker lock poisoned"))?;
         if guard.as_mut().is_some_and(worker::Worker::running) { return Ok(()); }
         *guard = None;
-        *guard = Some(worker::Worker::spawn(&self.config, self.id, &self.selection.language)?);
+        *guard = Some(worker::Worker::spawn(&self.config, self.id, &self.selection.language, canceled)?);
         Ok(())
     }
 
