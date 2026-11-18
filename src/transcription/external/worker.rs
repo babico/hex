@@ -1,6 +1,6 @@
 //! Persistent, bounded local Sherpa process. Kill and reap on cancellation,
  //! protocol failure or model switch; never retry a canceled recording.
-use std::{io::{BufRead, BufReader, Read, Write}, process::{Child, Command, Stdio}, sync::mpsc, time::{Duration, Instant}};
+use std::{io::{BufRead, BufReader, Read, Write}, process::{Child, Command, Stdio}, sync::{atomic::{AtomicBool, Ordering}, mpsc}, time::{Duration, Instant}};
 use color_eyre::eyre::{Result, bail, eyre};
 use super::{Registration, ExternalModelId};
 
@@ -54,7 +54,7 @@ fn queue_frame(input: &mpsc::SyncSender<String>, message: &str) -> Result<()> {
 
 impl Worker {
     pub(super) fn running(&mut self) -> bool { matches!(self.child.try_wait(), Ok(None)) }
-    pub(super) fn spawn(config: &Registration, id: ExternalModelId, language: &str) -> Result<Self> {
+    pub(super) fn spawn(config: &Registration, id: ExternalModelId, language: &str, canceled: Option<&AtomicBool>) -> Result<Self> {
         let mut command = Command::new(&config.executable);
         if config.python {
             command.arg("-u").arg("-c").arg(include_str!("../../../extras/turkish-stt/stt.py"))
@@ -88,12 +88,15 @@ impl Worker {
             }
         });
         let mut worker = Self { child, input, output, pcm_protocol: false };
-        worker.pcm_protocol = ready_response(&worker.receive(Duration::from_secs(90))?)?;
+        worker.pcm_protocol = ready_response(&worker.receive(Duration::from_secs(90), canceled)?)?;
         Ok(worker)
     }
-    fn receive(&self, timeout: Duration) -> Result<Vec<u8>> {
+    fn receive(&self, timeout: Duration, canceled: Option<&AtomicBool>) -> Result<Vec<u8>> {
         let deadline = Instant::now() + timeout;
         loop {
+            if canceled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                bail!("External STT model preparation canceled");
+            }
             if crate::transcription::gguf_session::job_cancel().is_some_and(|token| token.is_cancelled()) { bail!("External STT canceled"); }
             if Instant::now() >= deadline { bail!("External STT timed out"); }
             match self.output.recv_timeout(Duration::from_millis(25)) {
