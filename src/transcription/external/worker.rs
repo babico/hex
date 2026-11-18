@@ -116,7 +116,7 @@ mod tests {
     fn vendor_errors_are_visible_without_leaking_control_characters() {
         let error = text(br#"{"error":"missing vendor model cache"}"#).unwrap_err();
         assert!(error.to_string().contains("missing vendor model cache"));
-        assert_eq!(text(br#"{"text":" Merhaba dünya "}"#).unwrap(), "Merhaba dünya");
+        assert_eq!(text(r#"{"text":" Merhaba dünya "}"#.as_bytes()).unwrap(), "Merhaba dünya");
         assert!(text(br#"{"ready":true}"#).is_err());
     }
 }
