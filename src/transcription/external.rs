@@ -120,14 +120,20 @@ pub fn verify_registration(id: ExternalModelId, canceled: &std::sync::atomic::At
 /// executables, virtualenvs and manual weights are never deleted.
 pub fn remove(id: ExternalModelId) -> Result<()> {
     let registration = registration_path(id)?;
-    if !registration.is_file() { return Ok(()); }
+    if !registration.is_file() {
+        // The download may have been canceled before a receipt/registration
+        // existed, leaving partial ONNX files consuming disk space.
+        return install::remove_managed_revisions(id);
+    }
     // Deletion must still work if a previous app update removed the worker
     // executable, or a manually registered Python environment was deleted.
     // Runtime validation belongs to read_registration, not cleanup.
     let config = registration_record(id)?;
     if let Some(dir) = &config.managed_weights {
         install::remove_managed(id, dir)?;
+        install::remove_managed_revisions(id)?;
     }
+    // Never delete data from a manually registered runtime or virtualenv.
     unregister(id)
 }
 
