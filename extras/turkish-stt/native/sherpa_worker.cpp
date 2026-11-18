@@ -9,6 +9,65 @@
 #include <string>
 #include <vector>
 
+#include <cstdlib>
+#include <random>
+
+#ifdef _WIN32
+static bool ascii_path(const std::filesystem::path &path) {
+    for (unsigned char c : path.u8string()) if (c >= 128) return false;
+    return true;
+}
+
+// The official Sherpa SDK's Windows C++ code cannot open model files through
+// non-ASCII path strings, even when its caller passes valid UTF-8. Stage
+// exact model files under an ASCII-only user-writable path, preferring hard
+// links (no duplicate bytes on the same volume), and remove on exit.
+class AsciiModelAlias {
+public:
+    std::filesystem::path folder;
+    AsciiModelAlias(const std::filesystem::path &weights, const std::string &id) {
+        namespace fs = std::filesystem;
+        const char *override = std::getenv("HEX_STT_ASCII_SCRATCH_DIR");
+        const fs::path base = override && *override ? fs::u8path(override) : fs::temp_directory_path();
+        if (!ascii_path(base) || !fs::is_directory(base))
+            throw std::runtime_error("Set HEX_STT_ASCII_SCRATCH_DIR to a writable ASCII-only temporary directory");
+        std::random_device random;
+        for (int retry=0; retry<16; ++retry) {
+            const fs::path attempt = base / ("hex-stt-" + std::to_string(random()) + "-" + std::to_string(random()));
+            std::error_code ec;
+            if (fs::create_directory(attempt, ec)) { folder = attempt; break; }
+        }
+        if (folder.empty()) throw std::runtime_error("Could not create private native model alias directory");
+        try {
+            const std::string decoder = id == "mihu-v2" || id == "ufakzeka-kulak"
+                                      ? "decoder.int8.onnx" : "decoder.onnx";
+            for (const std::string &name : {std::string("encoder.int8.onnx"), decoder,
+                                             std::string("joiner.int8.onnx"), std::string("tokens.txt")}) {
+                const fs::path source = weights / name;
+                if (!fs::is_regular_file(source))
+                    throw std::runtime_error("Missing native model file: " + name);
+                const fs::path destination = folder / name;
+                std::error_code ec;
+                fs::create_hard_link(source, destination, ec);
+                if (ec) {
+                    ec.clear();
+                    fs::copy_file(source, destination, fs::copy_options::none, ec);
+                    if (ec) throw std::runtime_error("Could not stage native model file: " + name);
+                }
+            }
+        } catch (...) {
+            std::error_code ignored;
+            fs::remove_all(folder, ignored);
+            throw;
+        }
+    }
+    ~AsciiModelAlias() {
+        std::error_code ignored;
+        std::filesystem::remove_all(folder, ignored);
+    }
+};
+#endif
+
 namespace fs = std::filesystem;
 template <typename T, auto Destroy>
 using Handle = std::unique_ptr<const T, decltype(Destroy)>;
@@ -41,6 +100,10 @@ static std::vector<float> parse_pcm16(const std::string &hex) {
 }
 
 class Recognizer {
+#ifdef _WIN32
+    // Must outlive recognizers: C API file handles are closed before alias removal.
+    std::unique_ptr<AsciiModelAlias> model_alias;
+#endif
     Handle<SherpaOnnxOnlineRecognizer, SherpaOnnxDestroyOnlineRecognizer> online{nullptr, SherpaOnnxDestroyOnlineRecognizer};
     Handle<SherpaOnnxOfflineRecognizer, SherpaOnnxDestroyOfflineRecognizer> offline{nullptr, SherpaOnnxDestroyOfflineRecognizer};
     Handle<SherpaOnnxOnlineStream, SherpaOnnxDestroyOnlineStream> active{nullptr, SherpaOnnxDestroyOnlineStream};
@@ -51,6 +114,12 @@ public:
     Recognizer(const std::string &id, fs::path dir, int threads) {
         if (id == "ufakzeka-kulak" && fs::is_directory(dir / "sherpa-onnx-tdt"))
             dir /= "sherpa-onnx-tdt";
+#ifdef _WIN32
+        if (!ascii_path(dir)) {
+            model_alias = std::make_unique<AsciiModelAlias>(dir, id);
+            dir = model_alias->folder;
+        }
+#endif
         auto encoder = file(dir, "encoder.int8.onnx");
         auto decoder = file(dir, id == "mihu-v2" || id == "ufakzeka-kulak" ? "decoder.int8.onnx" : "decoder.onnx");
         auto joiner = file(dir, "joiner.int8.onnx");

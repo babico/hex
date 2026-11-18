@@ -122,3 +122,16 @@ Manually registered weights, executables and Python virtual environments are
 `hex turkish-stt unregister MODEL` to forget a registration without touching
 its managed weight files. If a model is still mapped or a download holds the
 lock, removal can fail safely; close the engine and retry.
+
+## Unicode model weights on Windows
+
+Sherpa's precompiled Windows model loader uses a narrow path interface and
+does not handle all UTF-8 model weight directory names. Hex's native worker
+keeps the original UTF-8 path for filesystem access but stages the four
+reviewed data files under a random, ASCII-only directory within the user's
+temporary folder when the path contains non-ASCII characters. It attempts
+NTFS hard links first (no weight duplication), falls back to a temporary copy
+if the source is on another drive, and cleans up on worker exit. If the user's
+TEMP itself contains Unicode, set `HEX_STT_ASCII_SCRATCH_DIR` to a writable
+ASCII-only path. Native five-platform tests intentionally load all three
+Sherpa models from a `Türkçe_Ağırlıklar` folder.
