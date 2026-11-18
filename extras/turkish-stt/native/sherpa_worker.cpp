@@ -15,8 +15,8 @@ using Handle = std::unique_ptr<const T, decltype(Destroy)>;
 
 static std::string file(const fs::path &dir, const char *name) {
     auto path = dir / name;
-    if (!fs::is_regular_file(path)) throw std::runtime_error("Missing model file: " + path.string());
-    return path.string();
+    if (!fs::is_regular_file(path)) throw std::runtime_error("Missing model file: " + path.u8string());
+    return path.u8string();
 }
 
 static std::vector<float> parse_pcm16(const std::string &hex) {
@@ -208,7 +208,7 @@ int main(int argc, char **argv) {
         if (threads < 1 || threads > 64) throw std::runtime_error("Expected 1-64 threads");
         const bool serve = args.count("--serve") && args.at("--serve") == "1";
         if (serve == bool(args.count("--wav"))) throw std::runtime_error("Choose --wav or --serve 1");
-        Recognizer recognizer(args.at("--model"), fs::path(args.at("--weights")), threads);
+        Recognizer recognizer(args.at("--model"), fs::u8path(args.at("--weights")), threads);
         if (serve) {
             // One input path per line; one JSON result per line. EOF destroys weights.
             // The process is local, and stdout is reserved for this protocol.

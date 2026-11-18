@@ -82,9 +82,10 @@ def benchmark(args):
         with wave.open(str(wav)) as w:
             assert (w.getnchannels(),w.getframerate(),w.getsampwidth()) == (1,16000,2)
             duration = w.getnframes()/w.getframerate()
-        revision = download(args.model,root/"weights")
+        weights = root / "Türkçe_Ağırlıklar"
+        revision = download(args.model, weights)
         start = time.perf_counter()
-        proc = subprocess.Popen([str(args.worker.resolve()),"--weights",str(root/"weights"),"--model",args.model,"--language","tr","--serve","1"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,encoding="utf-8",bufsize=1)
+        proc = subprocess.Popen([str(args.worker.resolve()),"--weights",str(weights),"--model",args.model,"--language","tr","--serve","1"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,encoding="utf-8",bufsize=1)
         q = queue.Queue()
         def reader():
             for line in proc.stdout: q.put(line)
