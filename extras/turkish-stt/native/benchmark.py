@@ -95,7 +95,9 @@ def benchmark(args):
             if line is None: raise RuntimeError("Worker exited")
             return json.loads(line)
         try:
-            assert recv().get("ready") is True
+            ready = recv()
+            assert ready.get("ready") is True
+            assert ready.get("pcm_protocol") == 1, "Native worker must advertise PCM clip support"
             cold = time.perf_counter()-start
             results = []
             for _ in range(2):
@@ -105,6 +107,28 @@ def benchmark(args):
                 text = recv()["text"]
                 elapsed = time.perf_counter()-start
                 results.append({"text":text,"wer":wer(REF,text),"seconds":elapsed,"rtf":elapsed/duration})
+            # Exercise the in-memory Rust/native protocol as distinct from
+            # the legacy on-disk WAV path. This catches output drift, invalid
+            # chunk framing and corrupted PCM16 on all five target platforms.
+            start = time.perf_counter()
+            proc.stdin.write("_HEX_CLIP_BEGIN_\n")
+            proc.stdin.flush()
+            assert recv()["text"] == ""
+            clip_chunks = 0
+            with wave.open(str(wav)) as recording:
+                while payload := recording.readframes(32768):
+                    proc.stdin.write("_HEX_CLIP_PCM_" + payload.hex() + "\n")
+                    proc.stdin.flush()
+                    assert recv()["text"] == ""
+                    clip_chunks += 1
+            proc.stdin.write("_HEX_CLIP_END_\n")
+            proc.stdin.flush()
+            direct_pcm = recv()["text"]
+            pcm_metrics = {"text": direct_pcm, "wer": wer(REF, direct_pcm),
+                           "seconds": time.perf_counter()-start, "chunks": clip_chunks}
+            if not words(direct_pcm) or words(direct_pcm) != words(results[0]["text"]):
+                raise RuntimeError("Native in-memory PCM clip differs from WAV path")
+
             if args.model in ("seda-v2", "seda-tiny"):
                 # True incremental Sherpa online decode: initial partials
                 # come from PCM16 chunks, not retranscribing whole WAVs.
@@ -139,7 +163,7 @@ def benchmark(args):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
-        metrics = {"model":args.model,"revision":revision,"reference":REF,"fixture":F,"attribution":"Google FLEURS, Turkish dev, CC BY 4.0","audio_seconds":duration,"cold_load_seconds":cold,"decodes":results,"streaming":metrics_partial}
+        metrics = {"model":args.model,"revision":revision,"reference":REF,"fixture":F,"attribution":"Google FLEURS, Turkish dev, CC BY 4.0","audio_seconds":duration,"cold_load_seconds":cold,"decodes":results,"direct_pcm":pcm_metrics,"streaming":metrics_partial}
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(metrics,ensure_ascii=False,indent=2),encoding="utf-8")
         print(json.dumps(metrics,ensure_ascii=False,indent=2))
