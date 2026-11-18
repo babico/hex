@@ -89,7 +89,17 @@ def serve(model, offline=False, input_stream=None, output_stream=None):
     """One audio path per line -> one JSON result. Starts only after weights load."""
     input_stream = input_stream if input_stream is not None else sys.stdin
     output_stream = output_stream if output_stream is not None else sys.stdout
-    runner = load_runner(model, offline)
+    try:
+        runner = load_runner(model, offline)
+    except Exception as error:
+        # Report a model-loading failure through the same protocol that Hex
+        # reads during prewarm, rather than silently closing stdout.
+        output_stream.write(json.dumps(
+            {"ready": False, "error": str(error)[:512]},
+            ensure_ascii=False, separators=(",", ":"),
+        ) + "\n")
+        output_stream.flush()
+        return 1
     output_stream.write('{"ready":true}\n')
     output_stream.flush()
     for line in input_stream:
