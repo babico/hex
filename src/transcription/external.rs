@@ -76,10 +76,14 @@ fn refresh_managed_executable(registration: &mut Registration, worker: Option<Pa
     }
 }
 
-fn read_registration(id: ExternalModelId) -> Result<Registration> {
+fn registration_record(id: ExternalModelId) -> Result<Registration> {
     let bytes = fs::read(registration_path(id)?)
         .wrap_err_with(|| format!("Register {} first: hex turkish-stt register-python {} /absolute/path/to/python", id.as_str(), id.as_str()))?;
-    let mut config: Registration = serde_json::from_slice(&bytes)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn read_registration(id: ExternalModelId) -> Result<Registration> {
+    let mut config = registration_record(id)?;
     if config.managed_weights.is_some() {
         // Supports both in-place updates and versioned installers. Do not
         // reinterpret manually registered commands or Python venv symlinks.
@@ -117,7 +121,10 @@ pub fn verify_registration(id: ExternalModelId, canceled: &std::sync::atomic::At
 pub fn remove(id: ExternalModelId) -> Result<()> {
     let registration = registration_path(id)?;
     if !registration.is_file() { return Ok(()); }
-    let config = read_registration(id)?;
+    // Deletion must still work if a previous app update removed the worker
+    // executable, or a manually registered Python environment was deleted.
+    // Runtime validation belongs to read_registration, not cleanup.
+    let config = registration_record(id)?;
     if let Some(dir) = &config.managed_weights {
         install::remove_managed(id, dir)?;
     }
