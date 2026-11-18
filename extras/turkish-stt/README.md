@@ -121,7 +121,10 @@ Manually registered weights, executables and Python virtual environments are
 **never** deleted; only their registration is forgotten. Use
 `hex turkish-stt unregister MODEL` to forget a registration without touching
 its managed weight files. If a model is still mapped or a download holds the
-lock, removal can fail safely; close the engine and retry.
+lock, removal can fail safely; close the engine and retry. If an interrupted
+download never created a model registration, the same `remove MODEL` command
+reclaims partial and superseded revisions under Hex's own managed weights
+tree. It never removes user-owned model folders or Python virtual environments.
 
 ## Unicode model weights on Windows
 
