@@ -33,6 +33,7 @@ with wave.open(str(base / "speech.wav"), "rb") as clip:
 PY
 "$cli" -m "$base/whisper-tiny-reference.gguf" -l tr -q "$base/speech.wav" > "$base/reference.txt"
 "$cli" -m "$base/whisper-tiny-Q8_0.gguf" -l tr -q "$base/speech.wav" > "$base/quantized.txt"
+cd "$GITHUB_WORKSPACE"
 python3 - "$base" "$GITHUB_SHA" <<'PY'
 import hashlib, json, pathlib, sys
 base = pathlib.Path(sys.argv[1])
