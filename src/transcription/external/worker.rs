@@ -1,12 +1,12 @@
 //! Persistent, bounded local Sherpa process. Kill and reap on cancellation,
  //! protocol failure or model switch; never retry a canceled recording.
-use std::{io::{BufRead, BufReader, Read, Write}, process::{Child, ChildStdin, Command, Stdio}, sync::mpsc, time::{Duration, Instant}};
+use std::{io::{BufRead, BufReader, Read, Write}, process::{Child, Command, Stdio}, sync::mpsc, time::{Duration, Instant}};
 use color_eyre::eyre::{Result, bail, eyre};
 use super::{Registration, ExternalModelId};
 
 pub(super) struct Worker {
     child: Child,
-    input: ChildStdin,
+    input: mpsc::SyncSender<String>,
     output: mpsc::Receiver<Vec<u8>>,
     pcm_protocol: bool,
 }
@@ -35,6 +35,16 @@ fn ready_response(bytes: &[u8]) -> Result<bool> {
     bail!("External STT worker did not report readiness")
 }
 
+/// Never write directly from the transcription thread to a child pipe: a
+/// wedged decoder can stop reading stdin indefinitely.
+fn queue_frame(input: &mpsc::SyncSender<String>, message: &str) -> Result<()> {
+    match input.try_send(message.to_owned()) {
+        Ok(()) => Ok(()),
+        Err(mpsc::TrySendError::Full(_)) => bail!("External STT worker input is blocked"),
+        Err(mpsc::TrySendError::Disconnected(_)) => bail!("External STT worker input closed"),
+    }
+}
+
 impl Worker {
     pub(super) fn running(&mut self) -> bool { matches!(self.child.try_wait(), Ok(None)) }
     pub(super) fn spawn(config: &Registration, id: ExternalModelId, language: &str) -> Result<Self> {
@@ -50,7 +60,15 @@ impl Worker {
         #[cfg(windows)]
         { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
         let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
-        let input = child.stdin.take().expect("piped stdin");
+        let mut child_stdin = child.stdin.take().expect("piped stdin");
+        let (input, input_queue) = mpsc::sync_channel::<String>(1);
+        let _writer = std::thread::spawn(move || {
+            while let Ok(message) = input_queue.recv() {
+                if writeln!(child_stdin, "{message}").and_then(|_| child_stdin.flush()).is_err() {
+                    break;
+                }
+            }
+        });
         let stdout = child.stdout.take().expect("piped stdout");
         let (tx, output) = mpsc::sync_channel(1);
         let _reader = std::thread::spawn(move || {
@@ -87,8 +105,7 @@ impl Worker {
     fn exchange_until(&mut self, message: &str, deadline: Instant, cancel: Option<&transcribe_cpp::CancelToken>) -> Result<String> {
         if message.contains(['\n','\r']) || message.len() > 131100 { bail!("Invalid worker message"); }
         if Instant::now() >= deadline { bail!("External worker timed out"); }
-        writeln!(self.input, "{message}")?;
-        self.input.flush()?;
+        queue_frame(&self.input, message)?;
         loop {
             if cancel.is_some_and(|token| token.is_cancelled()) { bail!("Live STT canceled"); }
             if crate::transcription::gguf_session::job_cancel().is_some_and(|token| token.is_cancelled()) { bail!("STT canceled"); }
@@ -163,8 +180,19 @@ impl Worker {
 
 #[cfg(test)]
 mod tests {
-    use super::{ready_response, text};
+    use super::{queue_frame, ready_response, text};
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_blocked_worker_pipe_cannot_block_the_transcription_thread() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        queue_frame(&sender, "first").unwrap();
+        let error = queue_frame(&sender, "second").unwrap_err();
+        assert!(error.to_string().contains("blocked"));
+        drop(_receiver);
+        assert!(queue_frame(&sender, "after close").is_err());
+    }
 
     #[test]
     fn a_clip_deadline_cannot_be_extended_by_per_frame_timeouts() {
