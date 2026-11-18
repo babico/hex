@@ -149,6 +149,30 @@ fn owned_revision_dir(root: &Path, dir: &Path) -> bool {
         && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Reclaim aborted downloads and superseded managed revisions. A model
+/// created by the user or registered with a custom executable never resides
+/// under this Hex-owned weights tree. Removal still uses the same download
+/// lock and symlink restrictions as deleting a single revision.
+pub(super) fn remove_managed_revisions(id: ExternalModelId) -> Result<()> {
+    if !supported(id) { return Ok(()); }
+    let root = models::models_dir()?.join("external").join("weights").join(id.as_str());
+    let info = match fs::symlink_metadata(&root) {
+        Ok(info) => info,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if info.file_type().is_symlink() || !info.is_dir() {
+        bail!("Refusing unsafe managed STT model root");
+    }
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !owned_revision_dir(&root, &path) { continue; }
+        remove_managed(id, &path)?;
+    }
+    Ok(())
+}
+
 pub(super) fn remove_managed(id: ExternalModelId, dir: &Path) -> Result<()> {
     let root = models::models_dir()?.join("external").join("weights").join(id.as_str());
     if !owned_revision_dir(&root, dir) {
