@@ -22,6 +22,13 @@ pub(super) fn text(bytes: &[u8]) -> Result<String> {
     Ok(result.get("text").and_then(serde_json::Value::as_str)
         .ok_or_else(|| eyre!("External backend must return a JSON text field"))?.trim().to_owned())
 }
+/// The overall budget grows with audio length for slower CPUs while always
+/// remaining finite. A ten-minute clip has less than 24 minutes total.
+fn clip_timeout(samples: usize) -> Duration {
+    let audio_seconds = (samples as u64).div_ceil(16_000);
+    Duration::from_secs((180_u64 + audio_seconds.saturating_mul(2)).min(1_500))
+}
+
 /// Parse the first bounded worker message, including model load failures.
 fn ready_response(bytes: &[u8]) -> Result<bool> {
     let ready: serde_json::Value = serde_json::from_slice(bytes)?;
@@ -129,10 +136,9 @@ impl Worker {
         if samples.is_empty() || samples.len() > 16_000 * 600 {
             bail!("PCM clip must contain 1-9,600,000 samples");
         }
-        // At most three minutes for the entire clip, including the final
-        // decode; never give each of the ~293 possible PCM frames a fresh
-        // 30-second budget.
-        let deadline = Instant::now() + Duration::from_secs(180);
+        // One total bounded deadline across all frames and the final decode.
+        // Allow slower CPUs proportionally more time on long recordings.
+        let deadline = Instant::now() + clip_timeout(samples.len());
         self.exchange_until("_HEX_CLIP_BEGIN_", deadline.min(Instant::now() + Duration::from_secs(15)), None)?;
         for chunk in samples.chunks(32768) {
             const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -180,7 +186,7 @@ impl Worker {
 
 #[cfg(test)]
 mod tests {
-    use super::{queue_frame, ready_response, text};
+    use super::{clip_timeout, queue_frame, ready_response, text};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -192,6 +198,13 @@ mod tests {
         assert!(error.to_string().contains("blocked"));
         drop(_receiver);
         assert!(queue_frame(&sender, "after close").is_err());
+    }
+
+    #[test]
+    fn clip_deadline_scales_for_long_recordings_but_stays_finite() {
+        assert_eq!(clip_timeout(16_000), Duration::from_secs(182));
+        assert_eq!(clip_timeout(16_000 * 600), Duration::from_secs(1_380));
+        assert_eq!(clip_timeout(usize::MAX), Duration::from_secs(1_500));
     }
 
     #[test]
