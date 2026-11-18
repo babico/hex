@@ -78,3 +78,24 @@ when a previous app version directory is removed.
 ## Local Whisper checkpoint compatibility
 
 The TurkMedSTT General Hugging Face repository provides `vocab.json` and `merges.txt` but not `tokenizer.json`, which the transcribe.cpp GGUF converter requires. `convert-whisper.sh` now stages the checkpoint outside the author's download directory and generates a fast tokenizer **offline** using the pinned Transformers conversion environment. The original 3 GB `model.safetensors` is linked rather than copied. Checkpoints must include merged Whisper encoder/decoder tensors; incomplete Git-LFS pointers and adapter-only LoRA weights are rejected. The actual 3 GB GGUF conversion and reference transcript parity are still unverified; this fixes prerequisite file preparation only.
+
+## GGUF/reference inference parity gate
+
+The optional fourth argument of `native/convert-whisper.sh` is a locally supplied
+16 kHz mono PCM16 Turkish WAV. After conversion to Q8_0 the tool builds the
+pinned transcribe.cpp CLI, runs the **original** local Transformers Whisper
+checkpoint and the **native** converted GGUF on the same audio, computes
+casefolded/normalized Turkish WER and CER, and writes
+`MODEL-parity.json` next to the quantized model. If the reference/native
+WER exceeds 35%, the command fails and must not be imported. This is a
+per-clip porting gate, not proof of production quality or model license clearance.
+
+```sh
+sh extras/turkish-stt/native/convert-whisper.sh \
+  turkmedstt /local/whisper-checkpoint /local/gguf-output /local/turkish-16khz.wav
+```
+
+Without the fourth WAV, only conversion/quantization is performed and the
+result is explicitly **unvalidated**; do not treat it as ready. Actual
+TurkMedSTT and TurkSpeak full-weight end-to-end inference parity still needs
+to pass on their own weights and a broader audio corpus.
