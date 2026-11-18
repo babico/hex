@@ -47,6 +47,19 @@ struct Stored { name: String, bytes: u64, sha256: String }
 fn check(canceled: &AtomicBool) -> Result<()> {
     if canceled.load(Ordering::Acquire) { bail!("Model installation canceled"); } Ok(())
 }
+
+/// Reject links inside Hex-owned model data. Otherwise an interrupted
+/// download's .partial file could point outside the model directory.
+fn reject_symlink(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(info) if info.file_type().is_symlink() => {
+            bail!("Refusing symlink in managed STT model path: {}", path.display())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
 fn acknowledgement(id: ExternalModelId) -> Result<PathBuf> {
     Ok(models::models_dir()?.join("external").join(format!("{}.license-accepted", id.as_str())))
 }
@@ -71,8 +84,13 @@ pub(crate) fn install(id: ExternalModelId, canceled: &AtomicBool, downloaded: &A
     let mut response = agent.get(&url).header("User-Agent", "hex-turkish-stt").call()?;
     let meta: Hub = serde_json::from_reader(response.body_mut().with_config().limit(8 << 20).reader())?;
     if meta.sha.len() != 40 || !meta.sha.bytes().all(|b| b.is_ascii_hexdigit()) || (revision != "main" && meta.sha != revision) { bail!("Invalid model revision"); }
-    let dir = models::models_dir()?.join("external").join("weights").join(id.as_str()).join(&meta.sha);
-    fs::create_dir_all(&dir)?;
+    let mut dir = models::models_dir()?;
+    for part in ["external", "weights", id.as_str(), meta.sha.as_str()] {
+        dir.push(part);
+        reject_symlink(&dir)?;
+        fs::create_dir_all(&dir)?;
+    }
+    reject_symlink(&dir.join(".download.lock"))?;
     let _lock = models::lock_downloads(&dir, canceled, || {})?;
     let mut names = required.to_vec();
     for extra in ["README.md", "LICENSE", "ATTRIBUTION.md", "SHA256SUMS"] {
@@ -88,11 +106,15 @@ pub(crate) fn install(id: ExternalModelId, canceled: &AtomicBool, downloaded: &A
         let digest = info.lfs.as_ref().map(|l| l.sha256.as_str());
         if name.ends_with(".onnx") && !digest.is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())) { bail!("No published ONNX SHA-256: {name}"); }
         let target = dir.join(name);
-        fs::create_dir_all(target.parent().ok_or_else(|| eyre!("Invalid model path"))?)?;
+        let parent = target.parent().ok_or_else(|| eyre!("Invalid model path"))?;
+        reject_symlink(parent)?;
+        fs::create_dir_all(parent)?;
+        reject_symlink(&target)?;
         let good = fs::metadata(&target).is_ok_and(|m| m.len() == size)
             && digest.is_some_and(|d| models::sha256_hex(&target, Some(canceled)).is_ok_and(|actual| actual == d));
         if !good {
             let partial = target.with_file_name(format!("{}.partial", target.file_name().ok_or_else(|| eyre!("No file name"))?.to_string_lossy()));
+            reject_symlink(&partial)?;
             if fs::metadata(&partial).is_ok_and(|m| m.len() > size) { fs::remove_file(&partial)?; }
             let url = format!("https://huggingface.co/{repo}/resolve/{}/{name}", meta.sha);
             crate::net::download(&crate::net::Download { url: &url, user_agent: "hex-turkish-stt", size: Some(size), canceled: Some(canceled) }, &partial,
@@ -157,6 +179,7 @@ pub(super) fn remove_managed(id: ExternalModelId, dir: &Path) -> Result<()> {
     // The same download lock prevents removing files during an install or
     // verification. Keep it held while deleting the directory's contents.
     let canceled = AtomicBool::new(false);
+    reject_symlink(&dir.join(".download.lock"))?;
     let lock = models::lock_downloads(dir, &canceled, || {})?;
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -251,12 +274,18 @@ fn validate_receipt(dir: &Path, receipt: &Receipt) -> Result<()> {
 }
 
 pub(super) fn verify(dir: &Path, canceled: Option<&AtomicBool>) -> Result<()> {
+    reject_symlink(dir)?;
+    reject_symlink(&dir.join("receipt.json"))?;
     let receipt: Receipt = serde_json::from_slice(&fs::read(dir.join("receipt.json"))?)?;
     validate_receipt(dir, &receipt)?;
     for file in receipt.files {
         let relative = Path::new(&file.name);
-        if !relative.components().all(|part| matches!(part, std::path::Component::Normal(_))) { bail!("Unsafe model path"); }
-        let path = dir.join(relative);
+        let mut path = dir.to_path_buf();
+        for part in relative.components() {
+            let std::path::Component::Normal(name) = part else { bail!("Unsafe model path"); };
+            path.push(name);
+            reject_symlink(&path)?;
+        }
         if fs::metadata(&path)?.len() != file.bytes || models::sha256_hex(&path, canceled)? != file.sha256 { bail!("Model checksum failed: {}", path.display()); }
     }
     Ok(())
