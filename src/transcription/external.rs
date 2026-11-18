@@ -169,6 +169,14 @@ pub fn cli(args: &[OsString]) -> Result<bool> {
     Ok(true)
 }
 
+/// Vendor Python and legacy WAV workers can be markedly slower than native
+/// PCM inference on a low-power CPU. Keep them bounded, but do not fail a
+/// ten-minute clip after the same two minutes allowed for a short recording.
+fn wav_clip_timeout(samples: usize) -> Duration {
+    let audio_seconds = (samples as u64).div_ceil(16_000);
+    Duration::from_secs((120_u64 + audio_seconds.saturating_mul(4)).min(2_700))
+}
+
 pub struct ExternalRunner {
     pub selection: TranscriptionSelection,
     id: ExternalModelId,
@@ -288,7 +296,7 @@ impl ExternalRunner {
             self.prewarm()?;
             let path = wav.to_str().ok_or_else(|| eyre!("Audio path must be UTF-8"))?;
             let mut guard = self.worker.lock().map_err(|_| eyre!("External worker lock poisoned"))?;
-            let result = guard.as_mut().ok_or_else(|| eyre!("External worker missing"))?.request(path);
+            let result = guard.as_mut().ok_or_else(|| eyre!("External worker missing"))?.request(path, wav_clip_timeout(samples.len()));
             if result.is_err() { *guard = None; }
             return result;
         }
@@ -304,7 +312,7 @@ impl ExternalRunner {
         { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
         let mut child = command.stdin(Stdio::null()).stdout(Stdio::from(File::create(&response)?))
             .stderr(Stdio::null()).spawn().wrap_err("Could not launch registered STT backend")?;
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + wav_clip_timeout(samples.len());
         let result: Result<_> = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -326,6 +334,13 @@ impl ExternalRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vendor_wav_timeout_scales_but_cannot_run_forever() {
+        assert_eq!(wav_clip_timeout(16_000), Duration::from_secs(124));
+        assert_eq!(wav_clip_timeout(16_000 * 600), Duration::from_secs(2_520));
+        assert_eq!(wav_clip_timeout(usize::MAX), Duration::from_secs(2_700));
+    }
+
     #[test]
     fn managed_registration_follows_app_upgrades_without_rebinding_user_commands() {
         let current = std::env::current_exe().unwrap();
