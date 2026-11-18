@@ -197,6 +197,25 @@ jobs:
           name: turkish-stt-metrics-${{ matrix.model }}
           path: metrics
 
+  whisper-gguf-smoke:
+    # Real conversion/quantization/inference of a small public model.
+    # This does not validate Turkish fine-tune parity.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Convert, quantize and infer a real Whisper checkpoint
+        shell: bash
+        run: bash extras/turkish-stt/native/test_whisper_gguf.sh
+      - uses: ./.github/release/upload
+        if: success()
+        with:
+          name: turkish-stt-whisper-gguf-conversion-smoke
+          path: metrics
+
   whisper-tokenizer:
     # An authentic checkpoint conversion prerequisite test: fetch only
     # public tokenizer metadata, never 3+ GB of weights or remote code.
