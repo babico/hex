@@ -1257,10 +1257,22 @@ pub fn download_with_stage_progress(
     stage: &AtomicU8,
 ) -> Result<PathBuf> {
     if let TranscriptionModelId::External(id) = model.id {
-        if !external::registered(id) && external::install::supported(id) {
+        ModelPreparationStage::Verifying.store(stage);
+        let source = external::registration_source(id)?;
+        if external::install::supported(id)
+            && source != external::RegistrationSource::Manual
+        {
+            // An intact Hex-managed model also works offline. If its files
+            // or receipt are damaged, repair only Hex-owned weights rather
+            // than committing a broken model or overwriting a custom worker.
+            if source == external::RegistrationSource::Managed {
+                if let Ok(path) = verify_installed(model, canceled) {
+                    return Ok(path);
+                }
+                check_canceled(canceled)?;
+            }
             return external::install::install(id, canceled, downloaded_bytes, stage);
         }
-        ModelPreparationStage::Verifying.store(stage);
         return verify_installed(model, canceled);
     }
     let ModelRuntime::Gguf(artifact) = model.runtime else {
