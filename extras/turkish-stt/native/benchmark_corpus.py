@@ -209,21 +209,23 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "rtf": seconds / (count / 16000),
             })
     aggregate = summarize(results)
+    gate_applied = args.max_wer is not None or args.max_cer is not None
     passed = ((args.max_wer is None or aggregate["wer"] <= args.max_wer)
-              and (args.max_cer is None or aggregate["cer"] <= args.max_cer))
+              and (args.max_cer is None or aggregate["cer"] <= args.max_cer)) if gate_applied else None
     report = {
         "model": args.model, "runtime": "Sherpa-ONNX resident worker",
         "worker_sha256": hashlib.sha256(worker_path.read_bytes()).hexdigest(),
         "weight_files": verified_weights,
         "manifest": str(args.manifest.resolve()), "clips": results,
         "aggregate": aggregate, "max_wer": args.max_wer,
-        "max_cer": args.max_cer, "passed": passed,
-        "note": "Report covers only locally reviewed audio; never infer broader accuracy.",
+        "max_cer": args.max_cer, "accuracy_gate_applied": gate_applied,
+        "passed": passed,
+        "note": "Without an explicit threshold there is no accuracy pass/fail. Never infer broader accuracy.",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2),
                            encoding="utf-8")
-    if not passed:
+    if passed is False:
         raise SystemExit(f"Native corpus accuracy below required threshold: {args.output}")
     return report
 
