@@ -81,6 +81,31 @@ class PersistentTests(unittest.TestCase):
             "ready": False, "error": "Turkish model weights are not cached"
         })
 
+    def test_vendor_stdout_cannot_corrupt_worker_protocol(self):
+        inp = io.StringIO("\n/tmp/a.wav\n")
+        out = io.StringIO()
+        diagnostics = io.StringIO()
+
+        def fake_load(model, offline):
+            print("Loading cached vendor weights...")
+            def decode(path):
+                print(f"Decoding {path}...")
+                return "İyi günler"
+            return decode
+
+        with patch.object(stt, "load_runner", side_effect=fake_load), contextlib.redirect_stderr(diagnostics):
+            self.assertEqual(stt.serve(stt.MODELS["balbal-v2"], True, inp, out), 0)
+
+        frames = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual(frames, [
+            {"ready": True},
+            {"error": "Invalid local audio path"},
+            {"text": "İyi günler"},
+        ])
+        self.assertIn("Loading cached vendor weights", diagnostics.getvalue())
+        self.assertIn("Decoding /tmp/a.wav", diagnostics.getvalue())
+        self.assertNotIn("Decoding", out.getvalue())
+
     def test_download_dispatches_explicit_model_load(self):
         out = io.StringIO()
         with patch.object(stt, "load_runner") as loader, contextlib.redirect_stdout(out):
