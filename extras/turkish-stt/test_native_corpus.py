@@ -33,6 +33,22 @@ class CorpusTests(unittest.TestCase):
         self.assertAlmostEqual(aggregate["wer"], 1 / 6)
         self.assertAlmostEqual(aggregate["rtf"], .5)
 
+    def test_model_specific_weights_are_recorded_without_a_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            weights = Path(tmp)
+            nested = weights / "sherpa-onnx-tdt"
+            nested.mkdir()
+            for name in ("encoder.int8.onnx", "decoder.int8.onnx",
+                         "joiner.int8.onnx", "tokens.txt"):
+                (nested / name).write_bytes(name.encode("utf-8"))
+            manifest = corpus.weight_manifest("ufakzeka-kulak", weights)
+            self.assertEqual(len(manifest), 4)
+            self.assertTrue(all(row["name"].startswith("sherpa-onnx-tdt/")
+                                for row in manifest))
+            (nested / "tokens.txt").unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "tokens.txt"):
+                corpus.weight_manifest("ufakzeka-kulak", weights)
+
     def test_audio_requires_pcm16_mono_16khz(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "speech.wav"
@@ -47,6 +63,9 @@ class CorpusTests(unittest.TestCase):
             root = Path(tmp)
             weights = root / "weights"
             weights.mkdir()
+            for name in ("encoder.int8.onnx", "decoder.onnx",
+                         "joiner.int8.onnx", "tokens.txt"):
+                (weights / name).write_bytes(f"reviewed-{name}".encode("utf-8"))
             executable = root / "worker"
             executable.write_bytes(b"fake native worker")
             records = [
@@ -89,6 +108,8 @@ class CorpusTests(unittest.TestCase):
                 result = corpus.evaluate(args)
             self.assertEqual(FakeWorker.instances, 1)
             self.assertTrue(result["passed"])
+            self.assertEqual(len(result["weight_files"]), 4)
+            self.assertEqual(len(result["weight_files"][0]["sha256"]), 64)
             self.assertAlmostEqual(result["aggregate"]["wer"], 1 / 6)
             self.assertEqual(len(result["clips"]), 2)
 
