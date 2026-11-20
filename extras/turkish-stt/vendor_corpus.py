@@ -69,7 +69,7 @@ def summary(rows: list[dict]) -> dict:
     return totals
 
 
-def evaluate(args: argparse.Namespace) -> dict:
+def evaluate(args: argparse.Namespace, runner=None) -> dict:
     if args.model not in MODELS:
         raise ValueError(f"Unsupported vendor evaluation model: {args.model}")
     for attr in ("max_wer", "max_cer"):
@@ -80,8 +80,11 @@ def evaluate(args: argparse.Namespace) -> dict:
     # Validate all audio before initializing expensive vendor engines.
     samples = [audio_samples(path) for path, _ in clips]
     model = stt.MODELS[args.model]
-    with contextlib.redirect_stdout(sys.stderr):
-        runner = stt.load_runner(model, offline=True)
+    if runner is None:
+        with contextlib.redirect_stdout(sys.stderr):
+            runner = stt.load_runner(model, offline=True)
+    # A pinned vendor benchmark can supply its already-warm recognizer so
+    # corpus measurement never loads multi-gigabyte weights a second time.
     results = []
     for (path, truth), count in zip(clips, samples):
         start = time.perf_counter()
