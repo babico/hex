@@ -45,6 +45,19 @@ def benchmark(model_id: str, destination: Path):
             words = value["text"].strip()
             results.append({"text": words, "wer": wer(REF, words),
                             "seconds": elapsed, "rtf": elapsed / duration})
+        # Exercise the same multi-clip WER/CER gate used for native models,
+        # reusing the recognizer already loaded for the two smoke decodes.
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from vendor_corpus import evaluate
+        manifest = root / "reviewed.jsonl"
+        manifest.write_text(json.dumps({"wav": wav.name, "text": REF},
+                                       ensure_ascii=False) + "\n", encoding="utf-8")
+        evaluate(argparse.Namespace(
+            model=model_id, manifest=manifest,
+            output=destination.parent / "corpus.json",
+            max_wer=.8, max_cer=None,
+        ), runner=lambda path: recognizer.transcribe(str(path))["text"])
         report = {"model": model_id, "engine": "balbal==0.6.3",
                   "attribution": "Powered by balbal - https://github.com/erayyap/balbal",
                   "reference": REF, "clip": F, "audio_seconds": duration,
