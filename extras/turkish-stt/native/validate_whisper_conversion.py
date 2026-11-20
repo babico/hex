@@ -20,15 +20,18 @@ from pathlib import Path
 
 def normalize(text: str) -> str:
     """Casefold, ignore punctuation, preserve Turkish letters and digits."""
-    folded = unicodedata.normalize("NFKC", text).casefold().replace("\u0307", "")
+    # Turkish dotted and dotless I are different letters. Unicode casefold
+    # alone maps capital ASCII I to i, incorrectly merging "I" with "İ".
+    folded = (unicodedata.normalize("NFKC", text)
+              .translate(str.maketrans({"I": "ı", "İ": "i"}))
+              .casefold().replace("\u0307", ""))
     return " ".join(re.findall(r"\w+", folded))
 
 
-def error_rate(reference: str, prediction: str, *, characters: bool = False) -> float:
+def error_counts(reference: str, prediction: str, *, characters: bool = False) -> tuple[int, int]:
+    """Levenshtein edit count and reference length for corpus-level micro WER/CER."""
     a = list(normalize(reference)) if characters else normalize(reference).split()
     b = list(normalize(prediction)) if characters else normalize(prediction).split()
-    if not a:
-        return 0.0 if not b else 1.0
     previous = list(range(len(b) + 1))
     for i, token in enumerate(a, 1):
         current = [i]
@@ -36,7 +39,12 @@ def error_rate(reference: str, prediction: str, *, characters: bool = False) -> 
             current.append(min(current[-1] + 1, previous[j] + 1,
                                previous[j-1] + (candidate != token)))
         previous = current
-    return previous[-1] / len(a)
+    return previous[-1], len(a)
+
+
+def error_rate(reference: str, prediction: str, *, characters: bool = False) -> float:
+    edits, count = error_counts(reference, prediction, characters=characters)
+    return edits / count if count else float(bool(edits))
 
 
 def compare(reference: str, native: str, max_parity_wer: float,
