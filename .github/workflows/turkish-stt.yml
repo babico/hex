@@ -201,7 +201,11 @@ jobs:
           if [ -f native-dist/hex-sherpa-worker ]; then chmod +x native-dist/hex-sherpa-worker; fi
           binary=native-dist/hex-sherpa-worker
           if [ "${{ runner.os }}" = "Windows" ]; then binary=native-dist/hex-sherpa-worker.exe; fi
-          python extras/turkish-stt/native/benchmark.py --worker "$binary" --model ${{ matrix.model }} --output metrics/result.json
+          flags=()
+          if [ "${{ runner.os }}" = "Linux" ] && [ "${{ runner.arch }}" = "X64" ] && [ "${{ matrix.model }}" = "seda-tiny" ]; then
+            flags+=(--corpus-smoke)
+          fi
+          python extras/turkish-stt/native/benchmark.py --worker "$binary" --model ${{ matrix.model }} --output metrics/result.json "${flags[@]}"
       - uses: ./.github/release/upload
         if: success()
         with:
