@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local Turkish STT companion for Hex. Vendor Python engines run in a persistent worker."""
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -90,7 +91,10 @@ def serve(model, offline=False, input_stream=None, output_stream=None):
     input_stream = input_stream if input_stream is not None else sys.stdin
     output_stream = output_stream if output_stream is not None else sys.stdout
     try:
-        runner = load_runner(model, offline)
+        # Vendor libraries sometimes print progress banners to stdout. That
+        # channel is reserved for one JSON frame per request in Hex's IPC.
+        with contextlib.redirect_stdout(sys.stderr):
+            runner = load_runner(model, offline)
     except Exception as error:
         # Report a model-loading failure through the same protocol that Hex
         # reads during prewarm, rather than silently closing stdout.
@@ -104,10 +108,11 @@ def serve(model, offline=False, input_stream=None, output_stream=None):
     output_stream.flush()
     for line in input_stream:
         path = line.rstrip("\r\n")
-        if not path or len(path) > 32768:
-            raise ValueError("Invalid local audio path")
         try:
-            result = runner(Path(path))
+            if not path or len(path) > 32768:
+                raise ValueError("Invalid local audio path")
+            with contextlib.redirect_stdout(sys.stderr):
+                result = runner(Path(path))
             if not isinstance(result, str):
                 raise TypeError("Adapter did not return text")
             response = {"text": result.strip()}
