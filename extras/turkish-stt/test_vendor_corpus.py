@@ -59,6 +59,14 @@ class VendorCorpusTests(unittest.TestCase):
             self.assertIsNone(ungraded["passed"])
             self.assertFalse(ungraded["accuracy_gate_applied"])
 
+            with patch.object(vendor.stt, "load_runner",
+                              side_effect=AssertionError("do not reload weights")) as loader:
+                reused = vendor.evaluate(
+                    args, runner=lambda path: "Iğdır ve İstanbul"
+                )
+                loader.assert_not_called()
+            self.assertIsNone(reused["passed"])
+
             args.max_wer = 0.0
             with patch.object(vendor.stt, "load_runner",
                               return_value=lambda path: "Bambaşka sözler"):
