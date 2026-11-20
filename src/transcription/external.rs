@@ -95,6 +95,32 @@ fn read_registration(id: ExternalModelId) -> Result<Registration> {
     Ok(config)
 }
 
+/// Distinguish Hex-managed weights from user-owned executables. The latter
+/// must never be silently overwritten by the built-in downloader.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegistrationSource {
+    Missing,
+    Managed,
+    Manual,
+}
+
+pub(crate) fn registration_source(id: ExternalModelId) -> Result<RegistrationSource> {
+    let bytes = match fs::read(registration_path(id)?) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RegistrationSource::Missing);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let record: Registration = serde_json::from_slice(&bytes)
+        .wrap_err_with(|| format!("Invalid {} registration; unregister it before reinstalling", id.as_str()))?;
+    Ok(if record.managed_weights.is_some() {
+        RegistrationSource::Managed
+    } else {
+        RegistrationSource::Manual
+    })
+}
+
 pub fn registered(id: ExternalModelId) -> bool { read_registration(id).is_ok() }
 
 pub fn register(id: ExternalModelId, executable: &Path, args: Vec<String>, python: bool) -> Result<()> {
