@@ -52,6 +52,18 @@ def main():
             result = runner(wav)
             elapsed = time.perf_counter() - started
             results.append({"text": result, "seconds": elapsed, "rtf": elapsed/duration, "wer": wer(REF, result)})
+        # Share the same reviewed ground-truth corpus evaluator as native
+        # and Balbal backends, reusing Duyu's warm ONNX model instance.
+        from vendor_corpus import evaluate
+        from argparse import Namespace
+        manifest = root / "reviewed.jsonl"
+        manifest.write_text(json.dumps({"wav": wav.name, "text": REF},
+                                       ensure_ascii=False) + "\n", encoding="utf-8")
+        evaluate(Namespace(
+            model="duyu-small", manifest=manifest,
+            output=Path("metrics/duyu-corpus.json"),
+            max_wer=.8, max_cer=None,
+        ), runner=runner)
         metrics = {"model": "duyu-small", "repo": REPO, "revision": REVISION,
                    "cold_load_seconds": cold, "audio_seconds": duration, "results": results}
         Path("metrics").mkdir(exist_ok=True)
