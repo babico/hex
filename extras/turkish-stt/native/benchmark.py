@@ -170,6 +170,20 @@ def benchmark(args):
         print(json.dumps(metrics,ensure_ascii=False,indent=2))
         if any(not words(x["text"]) or x["wer"] > .8 for x in results) or words(results[0]["text"]) != words(results[1]["text"]):
             raise RuntimeError("Real speech or repeated decode smoke test failed")
+        if args.corpus_smoke:
+            # Run the independent corpus evaluator against the same reviewed
+            # WAV and verified weights while they are still available.
+            # This checks its resident PCM protocol and metric gate in CI.
+            from benchmark_corpus import evaluate
+            from argparse import Namespace
+            manifest = root / "reviewed.jsonl"
+            manifest.write_text(json.dumps({"wav": "speech.wav", "text": REF},
+                                           ensure_ascii=False) + "\n", encoding="utf-8")
+            evaluate(Namespace(
+                worker=args.worker, weights=weights, model=args.model,
+                manifest=manifest, output=args.output.parent / "corpus.json",
+                max_wer=.8, max_cer=None,
+            ))
 
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
@@ -178,4 +192,5 @@ if __name__ == "__main__":
     p.add_argument("--worker",type=pathlib.Path,required=True)
     p.add_argument("--model",choices=MODELS,required=True)
     p.add_argument("--output",type=pathlib.Path,required=True)
+    p.add_argument("--corpus-smoke",action="store_true")
     benchmark(p.parse_args())
