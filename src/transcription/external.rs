@@ -444,9 +444,18 @@ mod tests {
             let path = registration_path(id).unwrap();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+            assert_eq!(
+                registration_source(id).unwrap(),
+                if record.managed_weights.is_some() {
+                    RegistrationSource::Managed
+                } else {
+                    RegistrationSource::Manual
+                }
+            );
             assert!(!registered(id));
             remove(id).unwrap();
             assert!(!path.exists());
+            assert_eq!(registration_source(id).unwrap(), RegistrationSource::Missing);
         }
 
         let orphan = root.join("external/weights/seda-tiny").join("b".repeat(40));
@@ -455,6 +464,13 @@ mod tests {
         assert!(!registration_path(ExternalModelId::SedaTiny).unwrap().exists());
         remove(ExternalModelId::SedaTiny).unwrap();
         assert!(!orphan.exists(), "partial managed weights were not reclaimed");
+
+        let damaged = registration_path(ExternalModelId::SedaTiny).unwrap();
+        std::fs::write(&damaged, b"{not-json").unwrap();
+        assert!(registration_source(ExternalModelId::SedaTiny).is_err());
+        // Never treat malformed user settings as an absent registration:
+        // doing so would unexpectedly replace a manually installed backend.
+        std::fs::remove_file(damaged).unwrap();
     }
 
     #[test]
