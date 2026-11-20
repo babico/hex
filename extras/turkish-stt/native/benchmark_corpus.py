@@ -92,14 +92,16 @@ class ResidentWorker:
     def transcribe(self, path: Path, sample_count: int) -> str:
         duration = sample_count / 16000
         deadline = time.monotonic() + min(1500, 180 + 2 * duration)
-        if self.send(b"_HEX_CLIP_BEGIN_", deadline).get("text") != "":
+        if self.send(b"_HEX_CLIP_BEGIN_", min(deadline, time.monotonic() + 15)).get("text") != "":
             raise RuntimeError("Native worker rejected PCM start")
         with wave.open(str(path), "rb") as audio:
             while payload := audio.readframes(32768):
-                frame = self.send(b"_HEX_CLIP_PCM_" + payload.hex().encode("ascii"), deadline)
+                frame = self.send(b"_HEX_CLIP_PCM_" + payload.hex().encode("ascii"),
+                                  min(deadline, time.monotonic() + 30))
                 if frame.get("text") != "":
                     raise RuntimeError("Unexpected native PCM transfer response")
-        response = self.send(b"_HEX_CLIP_END_", deadline)
+        response = self.send(b"_HEX_CLIP_END_",
+                             min(deadline, time.monotonic() + 120))
         result = response.get("text")
         if not isinstance(result, str):
             raise RuntimeError("Native decoder did not return text")
