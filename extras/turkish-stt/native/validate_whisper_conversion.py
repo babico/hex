@@ -79,10 +79,16 @@ def read_audio(path: Path):
         return np.frombuffer(stream.readframes(frames), dtype="<i2").astype("float32") / 32768.0
 
 
-def reference_text(checkpoint: Path, audio) -> str:
+def load_reference(checkpoint: Path):
+    # Load large Whisper checkpoints exactly once for an entire corpus.
+    # Reconstructing the Transformers pipeline for every WAV can exhaust
+    # memory and masks warm-inference latency.
     from transformers import pipeline
-    recognizer = pipeline("automatic-speech-recognition", model=str(checkpoint),
-                          device="cpu", trust_remote_code=False)
+    return pipeline("automatic-speech-recognition", model=str(checkpoint),
+                    device="cpu", trust_remote_code=False)
+
+
+def reference_text(recognizer, audio) -> str:
     result = recognizer({"array": audio, "sampling_rate": 16000},
                         generate_kwargs={"language": "turkish", "task": "transcribe"})
     if not isinstance(result, dict) or not isinstance(result.get("text"), str):
@@ -111,31 +117,95 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def load_manifest(path: Path) -> list[tuple[Path, str]]:
+    """Read reviewed local JSONL {"wav":"relative.wav","text":"..."} rows."""
+    base = path.resolve().parent
+    clips = []
+    seen = set()
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Invalid manifest JSON on line {lineno}: {error}") from error
+        if not isinstance(record, dict) or not isinstance(record.get("wav"), str) \
+                or not isinstance(record.get("text"), str) or not normalize(record["text"]):
+            raise ValueError(f"Manifest line {lineno} requires wav and nonempty text")
+        candidate = Path(record["wav"])
+        wav = (candidate if candidate.is_absolute() else base / candidate).resolve()
+        if wav in seen:
+            raise ValueError(f"Duplicate WAV in manifest line {lineno}: {wav}")
+        if not wav.is_file():
+            raise FileNotFoundError(f"Missing manifest WAV on line {lineno}: {wav}")
+        clips.append((wav, record["text"]))
+        seen.add(wav)
+    if not clips:
+        raise ValueError("The evaluation manifest must contain at least one clip")
+    return clips
+
+
+def corpus_accuracy(rows: list[dict]) -> dict:
+    """Micro-averaged accuracy weighted by Turkish reference token counts."""
+    totals = {"words": 0, "characters": 0}
+    for engine in ("reference", "native"):
+        totals[f"{engine}_word_errors"] = 0
+        totals[f"{engine}_character_errors"] = 0
+    for row in rows:
+        truth = row["ground_truth"]
+        for characters, unit in ((False, "word"), (True, "character")):
+            key = "characters" if characters else "words"
+            for engine in ("reference", "native"):
+                edits, count = error_counts(truth, row[engine], characters=characters)
+                totals[f"{engine}_{unit}_errors"] += edits
+                if engine == "reference":
+                    totals[key] += count
+    if totals["words"] == 0 or totals["characters"] == 0:
+        raise ValueError("Corpus contains no reference speech")
+    for engine in ("reference", "native"):
+        totals[f"{engine}_wer"] = totals[f"{engine}_word_errors"] / totals["words"]
+        totals[f"{engine}_cer"] = totals[f"{engine}_character_errors"] / totals["characters"]
+    totals["clips"] = len(rows)
+    return totals
+
+
 def run(args: argparse.Namespace) -> None:
     gguf, checkpoint, binary = args.gguf.resolve(), args.checkpoint.resolve(), args.native_cli.resolve()
     if not gguf.is_file() or not (checkpoint / "model.safetensors").is_file() or not binary.is_file():
         raise FileNotFoundError("Expected GGUF, staged safetensors checkpoint, and native transcribe-cli")
+    if args.max_native_wer is not None and not 0.0 <= args.max_native_wer <= 1.0:
+        raise ValueError("Expected max native WER between 0 and 1")
+    if args.max_native_wer is not None and args.manifest is None:
+        raise ValueError("Native WER threshold requires a ground-truth manifest")
+    clips = load_manifest(args.manifest) if args.manifest else [
+        (path.resolve(), None) for path in args.wav
+    ]
+    if not clips:
+        raise ValueError("At least one locally reviewed WAV is required")
+    recognizer = load_reference(checkpoint)
     results = []
-    for clip in args.wav:
-        wav = clip.resolve()
+    for wav, truth in clips:
         samples = read_audio(wav)
         started = time.perf_counter()
-        source = reference_text(checkpoint, samples)
+        source = reference_text(recognizer, samples)
         source_time = time.perf_counter() - started
         started = time.perf_counter()
         target = native_text(binary, gguf, wav)
         target_time = time.perf_counter() - started
-        comparison = compare(source, target, args.max_parity_wer)
+        comparison = compare(source, target, args.max_parity_wer, expected=truth)
         comparison.update({"wav": str(wav), "reference_seconds": source_time,
                            "native_seconds": target_time})
         results.append(comparison)
-    if not results:
-        raise ValueError("At least one locally reviewed WAV is required")
+    aggregate = corpus_accuracy(results) if args.manifest else None
+    passed = all(row["passed"] for row in results)
+    if args.max_native_wer is not None:
+        passed = passed and aggregate["native_wer"] <= args.max_native_wer
     metrics = {"model": args.model, "runtime": "transcribe.cpp GGUF",
                "checkpoint_sha256": sha256(checkpoint / "model.safetensors"),
                "gguf_sha256": sha256(gguf), "clips": results,
-               "passed": all(row["passed"] for row in results),
-               "note": "Single or small-corpus parity is not production WER validation."}
+               "aggregate": aggregate, "max_native_wer": args.max_native_wer,
+               "passed": passed,
+               "note": "One short corpus is not production accuracy validation."}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
@@ -149,9 +219,14 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--gguf", type=Path, required=True)
     parser.add_argument("--native-cli", type=Path, required=True)
-    parser.add_argument("--wav", type=Path, nargs="+", required=True)
+    audio = parser.add_mutually_exclusive_group(required=True)
+    audio.add_argument("--wav", type=Path, nargs="+")
+    audio.add_argument("--manifest", type=Path,
+                       help="JSONL with local WAV paths and ground-truth Turkish text")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-parity-wer", type=float, default=0.35)
+    parser.add_argument("--max-native-wer", type=float, default=None,
+                        help="Optional aggregate corpus WER limit, requires --manifest")
     run(parser.parse_args())
 
 
