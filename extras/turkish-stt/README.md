@@ -227,3 +227,30 @@ the Transformers reference is loaded only once. You can use the validator
 directly with `--max-native-wer` to reject a converted model that exceeds a
 specified corpus error rate. No full TurkMed/TurkSpeak conversion or corpus
 accuracy is claimed until that exact checkpoint and manifest pass.
+
+## Offline evaluation of Balbal, Duyu and Whisper vendor backends
+
+All five Python-only adapters (Balbal v2/Manas, Duyu Small,
+TurkMedSTT and TurkSpeak) can now be scored on the **same reviewed JSONL
+Turkish speech corpus** used by the native evaluator:
+
+```sh
+python extras/turkish-stt/vendor_corpus.py \\
+  --model balbal-v2 --manifest /absolute/corpus.jsonl \\
+  --output /absolute/metrics/balbal-v2.json \\
+  --max-wer 0.30 --max-cer 0.15
+```
+
+Install the vendor library and cache any approved weights **separately**
+beforehand. This command does not run pip, auto-download weights or
+accept licenses; it requests an offline vendor adapter and keeps the model
+loaded once for the entire corpus. It validates local WAV format, hashes
+all audio and the manifest, isolates vendor stdout, measures per-clip latency
+and reports corpus micro-WER, micro-CER and aggregate real-time factor.
+With no thresholds, `passed` is null rather than claiming accuracy.
+
+Native reports fingerprint their actual ONNX/token files; vendor libraries
+manage their own caches, so these reports explicitly record
+`model_revision_verified: false` until a separate vendor-weight provenance
+check is available. Treat cross-model results as research rather than a
+production accuracy guarantee without a substantial independent corpus.
