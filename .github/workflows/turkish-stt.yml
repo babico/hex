@@ -14,11 +14,14 @@ concurrency:
   group: turkish-stt-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  # macOS 26 ARM64 runners sometimes fail to provision (runner_id=0, no
+  # steps, cancelled after 15 minutes); macOS 15 is a supported ARM64
+  # GitHub-hosted runner for the same native binary and unsigned package.
   companion:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-26]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -75,7 +78,7 @@ jobs:
   macos:
     if: github.event_name == 'push' || inputs.build_desktop
     needs: [companion, sherpa-native]
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 120
     env:
       HEX_VERSION: 0.0.0-dev-${{ github.run_number }}
@@ -131,7 +134,7 @@ jobs:
             target: windows-x64
           - os: windows-11-arm
             target: windows-arm64
-          - os: macos-26
+          - os: macos-15
             target: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
@@ -184,7 +187,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-26]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-15]
         model: [seda-v2, seda-tiny, ufakzeka-kulak]
     runs-on: ${{ matrix.os }}
     steps:
@@ -361,7 +364,7 @@ jobs:
 
   native-macos-e2e:
     needs: [macos, sherpa-native]
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
