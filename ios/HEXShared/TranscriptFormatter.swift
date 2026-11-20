@@ -32,20 +32,22 @@ nonisolated enum DictationStyle: String, Codable, CaseIterable, Sendable {
 }
 
 nonisolated enum TranscriptFormatter {
-    static func format(_ raw: String, style: DictationStyle) -> String {
+    /// `language` (BCP 47) picks the fillers a style trims; nil is English.
+    static func format(_ raw: String, style: DictationStyle, language: String? = nil) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
+        let fillers = fillerPattern(for: language)
 
         switch style {
         case .verbatim:
             return collapseHorizontalSpaces(in: trimmed)
 
         case .polished:
-            let cleaned = stripStandaloneFillers(in: trimmed)
+            let cleaned = stripStandaloneFillers(in: trimmed, fillers: fillers)
             return polishSentences(cleaned)
 
         case .casual:
-            let cleaned = stripStandaloneFillers(in: trimmed)
+            let cleaned = stripStandaloneFillers(in: trimmed, fillers: fillers)
             var lowered = collapseHorizontalSpaces(in: cleaned).lowercased()
             // Keep standalone "i" and "i'm"/"i'll"/"i've"/"i'd" capitalized naturally, or pure casual lowercase?
             // Pure texting style: lowercase start and drop single-sentence trailing period, keep ? and !.
@@ -56,27 +58,34 @@ nonisolated enum TranscriptFormatter {
             return lowered.trimmingCharacters(in: .whitespacesAndNewlines)
 
         case .notes:
-            let cleaned = stripStandaloneFillers(in: trimmed)
+            let cleaned = stripStandaloneFillers(in: trimmed, fillers: fillers)
             return formatNotes(cleaned)
         }
     }
 
-    /// Joins dictated text cleanly with existing text around the insertion cursor.
+    /// Joins dictated text cleanly with existing text around the insertion cursor: one space
+    /// between it and a word before it, and, mid-sentence, a lowercase first word
+    /// (`continuingSentence`). `isWord` says whether a lowercase word is in the dictation
+    /// language's dictionary; nil leaves the case alone.
     static func insertionText(
         for formatted: String,
         beforeContext: String?,
-        afterContext: String?
+        afterContext: String?,
+        isWord: ((String) -> Bool)? = nil
     ) -> String {
         guard !formatted.isEmpty else { return "" }
         var output = formatted
 
-        if let before = beforeContext, let lastChar = before.last {
-            let needsLeadingSpace = !lastChar.isWhitespace
-                && lastChar != "("
-                && lastChar != "["
-                && lastChar != "{"
-                && lastChar != "\""
-                && lastChar != "“"
+        if let isWord, !startsSentence(after: beforeContext) {
+            output = continuingSentence(output, isWord: isWord)
+        }
+
+        if beforeContext?.last?.isWhitespace ?? true {
+            // Never a second space after the one already there.
+            output = String(output.drop { $0 == " " || $0 == "\t" })
+        } else if let lastChar = beforeContext?.last {
+            let needsLeadingSpace = !"([{\"“‘«¿¡".contains(lastChar)
+                && !output.hasPrefix(" ")
                 && !output.hasPrefix("\n")
                 && !isClosingPunctuation(output.first)
             if needsLeadingSpace {
@@ -97,13 +106,69 @@ nonisolated enum TranscriptFormatter {
         return output
     }
 
+    /// Whether text typed before the cursor leaves the next words at a sentence start: none
+    /// (or only spaces), a line break, or `.` `!` `?` `…` (closing quotes or brackets
+    /// after them count too).
+    static func startsSentence(after before: String?) -> Bool {
+        guard let before else { return true }
+        for character in before.reversed() {
+            if character.isNewline { return true }
+            if character.isWhitespace || "\"”’')]»".contains(character) { continue }
+            return ".!?…。".contains(character)
+        }
+        return true
+    }
+
+    /// German and Luxembourgish capitalize every noun, and their dictionaries accept nouns in
+    /// lowercase, so a dictation there keeps its case rather than lose a noun's capital.
+    static func lowercasesContinuations(in language: String) -> Bool {
+        let code = Locale(identifier: language).language.languageCode?.identifier ?? language
+        return code != "de" && code != "lb"
+    }
+
+    /// Lowercases the first letter of words that continue a sentence, as typing would. Keeps
+    /// "I" and its contractions, acronyms ("NASA"), words with capitals inside ("McDonald's"),
+    /// and words whose lowercase form `isWord` doesn't know, which are likely names.
+    static func continuingSentence(_ text: String, isWord: (String) -> Bool) -> String {
+        guard let first = text.first, first.isUppercase else { return text }
+        let word = String(text.prefix { $0.isLetter || $0 == "'" || $0 == "’" })
+        if word == "I" || word.hasPrefix("I'") || word.hasPrefix("I’") { return text }
+        let letters = word.filter(\.isLetter)
+        if letters.count >= 2, letters == letters.uppercased() { return text }
+        if letters.dropFirst().contains(where: \.isUppercase) { return text }
+        guard isWord(word.lowercased()) else { return text }
+        return first.lowercased() + text.dropFirst()
+    }
+
     private static func isClosingPunctuation(_ character: Character?) -> Bool {
         guard let character else { return false }
         return ".,!?;:)]}”".contains(character)
     }
 
-    private static func stripStandaloneFillers(in text: String) -> String {
-        let pattern = #"(?i)(?:^|(?<=[\s,]))(?:um+|uh+|er+|ah+)(?=(?:[\s,.!?]|$)),?\s*"#
+    /// The hesitation sounds a style trims, per language. English "er" is a word in
+    /// Norwegian, Danish, Swedish ("er" = is) and German, and "um" is one in Portuguese, so
+    /// each language trims only its own; a language without a list trims nothing. Spanish
+    /// trims "eh", "em" and "mmm" (never "e", which is "and"), German "äh", "ähm" and "öhm"
+    /// (never "eh", which is "anyway").
+    static func fillerPattern(for language: String?) -> String? {
+        let code = language.flatMap { Locale(identifier: $0).language.languageCode?.identifier } ?? "en"
+        switch code {
+        case "en":
+            return "um+|uh+|er+|ah+"
+        case "nb", "nn", "no", "da", "sv":
+            return "e+h+m*|ø+h+m*|ö+h+m*|hm+"
+        case "es":
+            return "e+h+m*|e+m+|m{2,}|hm+"
+        case "de":
+            return "ä+h+m*|ö+h+m*|hm+"
+        default:
+            return nil
+        }
+    }
+
+    private static func stripStandaloneFillers(in text: String, fillers: String?) -> String {
+        guard let fillers else { return collapseHorizontalSpaces(in: text) }
+        let pattern = #"(?i)(?:^|(?<=[\s,]))(?:"# + fillers + #")(?=(?:[\s,.!?]|$)),?\s*"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         let stripped = regex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
@@ -182,7 +247,7 @@ nonisolated enum TranscriptFormatter {
                 capitalizeNext = false
             } else if ".!?".contains(ch) || ch == "\n" {
                 capitalizeNext = true
-            } else if !ch.isWhitespace && ch != "\"" && ch != "“" && ch != "(" {
+            } else if !ch.isWhitespace && !"\"“(¿¡".contains(ch) {
                 capitalizeNext = false
             }
         }

@@ -278,6 +278,11 @@ pub(super) const KEYS: &[Key] = &[
         "How long dictation history is kept",
     ),
     key(
+        "typing_wpm",
+        Kind::Integer { min: 10, max: 200 },
+        "Words a minute you type, which Dictation stats compares against your dictations to show the time saved; 40 by default",
+    ),
+    key(
         "labs.live_text",
         Kind::Bool,
         "Labs: provisional words beside the HUD while dictating",
@@ -291,11 +296,6 @@ pub(super) const KEYS: &[Key] = &[
         "labs.live_typing",
         Kind::Bool,
         "Labs: provisional words in the focused text field as an underlined input-method preedit, and the final text typed there instead of pasted (Linux Wayland)",
-    ),
-    key(
-        "labs.settings_search",
-        Kind::Bool,
-        "Labs: a search field at the top of General that filters its rows",
     ),
     key(
         "labs.release_notes_link",
@@ -340,7 +340,7 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.unload_idle_minutes",
         Kind::NumberChoice(&["5", "15", "30", "60"]),
-        "Minutes unused before Labs › Unload model when idle unloads the model",
+        "Minutes unused before Labs › Free memory when idle unloads the model",
     ),
     key(
         "labs.keep_microphone_open",
@@ -437,6 +437,20 @@ pub(super) const KEYS: &[Key] = &[
          modifiers such as Option, Globe, or ⌃⌥ (macOS)",
     ),
     key(
+        "labs.hold_through_keys",
+        Kind::Bool,
+        "Labs: a key or click joining a held shortcut with no key a second or more after it \
+         went down reaches the app in front and leaves the dictation recording, which the \
+         release still finishes (macOS and Windows)",
+    ),
+    key(
+        "labs.modes_editor",
+        Kind::Bool,
+        "Labs: a Modes pane in the main sidebar edits each mode's apps and websites, \
+         corrections, OpenCode rewrite (on or off, and its model), and transformations; \
+         Output stays the read-only view",
+    ),
+    key(
         "labs.benchmark_details",
         Kind::Bool,
         "Labs: the Local transcription picker shows each model's raw error rate (WER or CER), benchmark, source, and conditions",
@@ -476,12 +490,7 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.history_stats",
         Kind::Bool,
-        "Labs: a summary of retained dictations at the top of History, and hex history stats",
-    ),
-    key(
-        "labs.history_multi_select",
-        Kind::Bool,
-        "Labs: select several dictations in History with Shift-click, Cmd-click (Ctrl on Windows and Linux), or a drag, then copy or delete them together",
+        "Labs: a summary of retained dictations at the top of History, with a year-long heatmap and all-time totals from a daily rollup in usage.json (counts only, no text or app names) kept beyond History's retention. While off, the rollup is never written or read; hex history stats prints it too",
     ),
     key(
         "labs.recent_dictations",
@@ -602,18 +611,26 @@ pub(super) const KEYS: &[Key] = &[
     key(
         "labs.yolo_mode",
         Kind::Bool,
-        "Labs: a shortcut dictation held for at least labs.yolo_mode_seconds presses Return after pasting",
-    ),
-    key(
-        "labs.yolo_mode_seconds",
-        Kind::NumberChoice(&["1", "2", "3", "5", "10"]),
-        "Seconds a dictation shortcut must be held for Labs › YOLO mode to press Return: 1, 2, 3, 5, or 10",
+        "Labs: press Return after pasting a shortcut dictation, so the message sends itself",
     ),
     key(
         "labs.yolo_mode_apps",
         Kind::Json,
         "Labs: the apps YOLO mode presses Return in, as a JSON list of \
          application names as Modes match them; an empty list means every app",
+    ),
+    key(
+        "labs.drop_transcribe",
+        Kind::Bool,
+        "Labs: a WAV, MP3, AAC, M4A, MP4, MOV, AIFF, CAF, FLAC, OGG, Opus, WebM, or MKV file \
+         dropped on the Hex window is transcribed with the selected dictation model and saved \
+         as a text file next to it",
+    ),
+    key(
+        "labs.paste_last_picker",
+        Kind::Bool,
+        "Labs: holding Paste Last opens a picker of recent dictations and annotations, and History \
+         lists dictations, annotations, screenshots, and recordings together (macOS)",
     ),
     key(
         "labs.api_processing",
@@ -651,6 +668,13 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: the menu bar lists the next calendar meetings, each a local start and end time and \
          title; choosing one that has a call link opens it, and that click doesn't start a \
          recording (macOS, with Meetings on and a calendar connected)",
+    ),
+    key(
+        "labs.calendar_bulk_select",
+        Kind::Bool,
+        "Labs: Meetings settings shows Select all or Deselect all beside the Calendars row, so \
+         every calendar is included or left out at once; calendars added later stay included \
+         (macOS)",
     ),
     key(
         "labs.pause_menu",
@@ -928,6 +952,7 @@ pub(super) const RETIRED: &[(&str, &str)] = &[
     ),
     ("labs.meeting_notes_file", "meetings.export.notes_file true"),
     ("labs.expire_meeting_audio", "meetings.audio_retention week"),
+    ("labs.yearly_stats", "labs.history_stats true"),
 ];
 
 /// Settings that act only where Hex has a capability (by its

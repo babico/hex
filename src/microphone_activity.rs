@@ -279,7 +279,7 @@ fn is_process_of(bundle_id: &str, canonical_bundle_id: &str) -> bool {
 
 /// Linux and Windows executables (lowercase, without `.exe`) by the bundle
 /// identifier of the same app on macOS.
-const EXECUTABLES: [(&str, &str); 45] = [
+const EXECUTABLES: [(&str, &str); 47] = [
     // Discord and its Canary and PTB builds, on Windows and Linux (the
     // Flatpak runs the same binary).
     ("discord", "com.hnc.Discord"),
@@ -324,6 +324,11 @@ const EXECUTABLES: [(&str, &str); 45] = [
     ("firefox", "org.mozilla.firefox"),
     ("firefox-bin", "org.mozilla.firefox"),
     ("firefox-esr", "org.mozilla.firefox"),
+    // Zen is Firefox-based. Its Flatpak and tarball launcher run `zen`, the
+    // tarball's binary is `zen-bin`, and every content process keeps the same
+    // executable, so the microphone's binary names the browser.
+    ("zen", "app.zen-browser.zen"),
+    ("zen-bin", "app.zen-browser.zen"),
     ("msedge", "com.microsoft.edgemac"),
     ("microsoft-edge", "com.microsoft.edgemac"),
     ("microsoft-edge-stable", "com.microsoft.edgemac"),
@@ -334,7 +339,7 @@ const EXECUTABLES: [(&str, &str); 45] = [
     ("vivaldi-snapshot", "com.vivaldi.Vivaldi"),
 ];
 
-fn canonical_bundle_id_for(bundle_id: &str, name: Option<&str>) -> Option<&'static str> {
+pub(crate) fn canonical_bundle_id_for(bundle_id: &str, name: Option<&str>) -> Option<&'static str> {
     let bundle = bundle_id.to_ascii_lowercase();
     let executable = bundle.strip_suffix(".exe").unwrap_or(&bundle);
     if let Some((_, canonical)) = EXECUTABLES.iter().find(|(known, _)| *known == executable) {
@@ -609,11 +614,20 @@ fn parent_pid(pid: i32) -> Option<i32> {
 /// a plain thread with no pool to drain them, so each poll would otherwise
 /// keep every `NSRunningApplication` it touched for the life of the process.
 pub fn active_microphone_applications() -> Result<Vec<ActiveMicrophoneApplication>> {
-    objc2::rc::autoreleasepool(|_| inspect_microphone_applications())
+    objc2::rc::autoreleasepool(|_| inspect_microphone_applications(None))
 }
 
 #[cfg(target_os = "macos")]
-fn inspect_microphone_applications() -> Result<Vec<ActiveMicrophoneApplication>> {
+pub(crate) fn applications_using_input(
+    device: AudioObjectID,
+) -> Result<Vec<ActiveMicrophoneApplication>> {
+    objc2::rc::autoreleasepool(|_| inspect_microphone_applications(Some(device)))
+}
+
+#[cfg(target_os = "macos")]
+fn inspect_microphone_applications(
+    device: Option<AudioObjectID>,
+) -> Result<Vec<ActiveMicrophoneApplication>> {
     let process_objects = property_vec::<AudioObjectID>(
         kAudioObjectSystemObject as AudioObjectID,
         kAudioHardwarePropertyProcessObjectList,
@@ -625,7 +639,16 @@ fn inspect_microphone_applications() -> Result<Vec<ActiveMicrophoneApplication>>
         else {
             continue;
         };
-        if is_running_input == 0 {
+        if is_running_input == 0
+            || device.is_some_and(|id| {
+                !property_vec_in::<AudioObjectID>(
+                    process_object,
+                    kAudioProcessPropertyDevices,
+                    kAudioObjectPropertyScopeInput,
+                )
+                .is_ok_and(|devices| devices.contains(&id))
+            })
+        {
             continue;
         }
         let Ok(pid) = property_value::<i32>(process_object, kAudioProcessPropertyPID) else {
@@ -1178,6 +1201,10 @@ mod tests {
             ),
             ("chrome", "Google Chrome", Some("com.google.Chrome"), true),
             ("firefox.exe", "Firefox", Some("org.mozilla.firefox"), true),
+            // Zen on Linux: the Flatpak and tarball launcher binary, then the
+            // tarball's real `zen-bin`; content processes run the same one.
+            ("zen", "Zen", Some("app.zen-browser.zen"), true),
+            ("zen-bin", "Zen", Some("app.zen-browser.zen"), true),
             (
                 "msedge.exe",
                 "Microsoft Edge",

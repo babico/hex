@@ -72,6 +72,8 @@ Labs > Meetings switch (macOS)                       // meetings.opt-in; off by 
 │   ├── Advanced -> Show recording indicator (on by default; corner-snapping
 │   │   capsule) and the System Audio Recording row once allowed
 │   ├── Calendar -> Connect calendar; reminders before meetings // meetings.calendar
+│   │   ├── Labs › Select all calendars -> one Select all / Deselect all button
+│   │   │   beside the Calendars row // labs.calendar_bulk_select
 │   │   └── Labs › Upcoming meetings in menu bar -> the same meetings in the status menu // labs.calendar_menu
 │   └── Detected calls -> Stop when the call ends (macOS, off;
 │       │   meetings.stop_when_call_ends), then Ask / Always record / Never
@@ -230,9 +232,10 @@ Browser calls -> offered as "Call in <browser>": no site is read yet, so a
     a browser call after 20 s, never the Microsoft Teams (or other service's)
     choice; Always record can't be set for it from an offer
     └── browsers: chrome, chromium, brave, helium (helium-browser), firefox,
-        msedge, vivaldi (vivaldi-bin, vivaldi-stable, vivaldi-snapshot; a
-        Vivaldi web app runs in Vivaldi's process); others are not detected
-        (#1105)
+        zen (zen, zen-bin; the Flatpak or tarball build, content processes
+        included), msedge, vivaldi (vivaldi-bin, vivaldi-stable,
+        vivaldi-snapshot; a Vivaldi web app runs in Vivaldi's process);
+        others are not detected (#1105)
 Permissions -> none asked; the System Audio Recording row is macOS-only
 Calendar -> none (no Connect calendar row)
 Notes and live chapters -> After a meeting › Summaries is a switch (off by
@@ -255,9 +258,9 @@ Offer capsule can't open (Linux; GNOME on Wayland opens no interactive
     -> 2 s after the offer Rune reports the overlay unavailable -> logged
        "meeting recording offer could not show", and the window opens on
        Meetings saying so with Rune's reason; its Start recording records;
-       while Labs › Floating meeting capsules on GNOME is off, the note
+       while Labs › Call recording controls on GNOME is off, the note
        names it
-    ├── Labs › Floating meeting capsules on GNOME on (off by default, #1274),
+    ├── Labs › Call recording controls on GNOME on (off by default, #1274),
     │   layer-shell missing, this user's Xwayland already running (checked at
     │   each show; never started) -> offer and recording capsules float on
     │   XWayland: override-redirect, clicks on their buttons, never keyboard
@@ -283,9 +286,15 @@ error showed. Check: `pane_requests_reach_the_window_s_own_meetings` in
 a real Windows PC has not been observed.
 
 Not on Linux and Windows yet: the Option-Control-V meeting paste shortcut,
-Copy section from the tray, dragging the recording capsule to another corner,
-the `hex meetings` and `hex mcp` commands (shared-control), and website names
-for browser calls. Verified: Linux and Windows x64 build and lint
+Copy section from the tray, the `hex meetings` and `hex mcp` commands
+(shared-control), and website names for browser calls. Dragging a capsule to
+another corner works on Windows, on X11 desktops, and on a capsule floated on
+XWayland (GNOME with Labs › Call recording controls on GNOME), though none of
+that has been tried by hand on a real Windows PC or X11 desktop; only a native
+Wayland capsule returns to the corner it started in
+(`primary_screen_size` in
+[rune_ui/meeting_capsules/screen.rs](../../src/rune_ui/meeting_capsules/screen.rs)).
+Verified: Linux and Windows x64 build and lint
 (`cargo clippy`, `cargo xwin clippy`); the single default-output PipeWire
 monitor capture and the pw-dump parsing were checked by hand on Arch/niri
 before #1801. Not verified: the multi-sink capture #1801 added has not been
@@ -335,21 +344,38 @@ Signal / Telegram / WeChat / LINE / Webex / Element / Phone call, or a browser c
      └── Ask -> Capsule below the menu bar, focus-free  // meetings.offer
          ├── Title: "Google Meet call detected", "Call on meet.jit.si",
          │   "Call in Brave Browser" (site unknown), or the meeting's name
-         ├── Record -> Start recording
+          ├── The app's local icon, or the website's bundled service mark when
+          │   known. Otherwise a neutral call icon, never the hosting browser's.
+          │   The same 24 pt slot keeps the title aligned as a local icon loads.
+          ├── Record -> request this call once, without waiting for the animation
+          │   ├── The same surface contracts in its corner, the offer fading out
+          │   │   under its moving edge. “Starting…” shows at the pill's resting
+          │   │   place, and only once a start has taken 180 ms; a quicker start
+          │   │   goes straight to the timer. Reduce Motion lands the pill and
+          │   │   fades the arrival
+          │   ├── Only once capture starts -> live field + timer, or hide if the indicator is off
+          │   ├── A pointer left over Record doesn't expand the pill or press Stop
+          │   └── Withdrawal before acceptance, replacement, or failure ends the pending view;
+          │       recording failures keep the usual recovery. Manual and automatic starts
+          │       without an offer don't show this transition.
          ├── Not now -> Close
          ├── … -> "<provider>" · "Change anytime in Settings" (capsule widens)
+         │   │   No rule is saved and no recording starts. The choices stay
+         │   │   open past the timeout, until answered or the offer is withdrawn.
          │   ├── Never offer -> saved, close
          │   ├── Always record -> saved, records this call too
          │   │   └── not offered for a browser on an unknown page
-         │   └── Cancel
-         └── 20 s timeout -> Close                     // never records on timeout
+         │   └── Cancel -> Back to Record / Not now; if the original timer
+         │       already fired, the compact offer gets another 20 s
+         └── 20 s timeout while compact -> Close       // never records on timeout
              └── unanswered -> the snooze ends the moment the call app leaves
                  the microphone, so a call joined after its pre-join screen is
                  offered again when it retakes it (#1267; check
                  `a_timed_out_offer_is_offered_again_when_the_call_retakes_the_microphone`;
                  not observed on a real Meet call)
   -> Same call is snoozed by key and app until off the microphone for 60 s,
-     offered or recorded; stopping an automatic recording does not restart it
+     offered or recorded; a call still on the microphone after its recording
+     was stopped (by hand, or on its own) is not started again
      └── Absence counts from the last time the call app was on the microphone,
          a gap included (sleep, Meetings off, a recording): an app that left
          the microphone during a recording is not snoozed for another minute
@@ -361,15 +387,30 @@ Signal / Telegram / WeChat / LINE / Webex / Element / Phone call, or a browser c
      │   call (#1113)
      │   └── While that recording is an automatic one with Stop when the
      │       call ends on, the page is still read every 2 s: another code
-     │       showing for 4 s ends the recording's call (see Record)
-     └── Stopped by hand -> the snooze ends once the call app has been off
-         the microphone for 3 s (seen while transcribing too), so the next
-         call in the same app is offered; a dismissed offer keeps the minute
-         for a muted call dropping off mid-call. Checks:
+     │       showing for 4 s ends the recording's call (see Record). The code
+     │       the page named is remembered while the browser stays on the
+     │       microphone: a read that still names the ended call, or none, is
+     │       taken as the new call, so going back to the old call in that
+     │       window is recorded under the new call's name. The new recording
+     │       keeps the ended code, so its page naming it never ends it. The
+     │       memory clears on a detection, a read naming another call, the
+     │       call app leaving the microphone, Keep recording, the page
+     │       returning to the recorded call during the 30 s grace (a hand
+     │       stop keeps it), while Meetings is off, or two minutes after the
+     │       page named the new call
+     └── Stopped by hand, or on its own after its call ended -> the snooze
+         ends once the call app has been off the microphone for 3 s (seen
+         while transcribing too), so the next call in the same app is offered
+         or recorded again; an app already gone that long when its recording
+         stops ends the snooze at once, so retaking the microphone is a new
+         call. A dismissed offer keeps the minute for a muted call dropping
+         off mid-call. Checks:
          `a_different_meet_call_in_the_same_browser_is_not_snoozed_by_the_first`,
          `meet_prefixed_addresses_are_snoozed_by_their_own_codes`,
          `extracts_a_meet_code_from_a_meet_prefixed_address`,
-         `a_stopped_call_s_app_is_snoozed_only_until_it_leaves_for_a_few_seconds`
+         `a_stopped_call_s_app_is_snoozed_only_until_it_leaves_for_a_few_seconds`,
+         `an_automatic_call_ended_stop_offers_the_call_again_when_it_returns`,
+         `a_hand_stopped_call_still_on_the_microphone_stays_snoozed`
   -> "Left the call" prompt after the call app is off the microphone for 3 s
   -> Times are wall-clock runs: observations more than 10 s apart (sleep, a
      stalled loop) start a stability run again instead of counting the gap
@@ -388,7 +429,8 @@ Brave's), Helium (`net.imput.helium`, helpers included; `helium` and
 `helium-browser` on Linux, `helium.exe` on Windows), Ardia
 (`com.ardia.browser`, its Chromium audio service reports
 `com.ardia.browser.helper`), Zen (`app.zen-browser.zen`; Firefox-based, so its
-helpers are `app.zen-browser.*` rather than `org.mozilla.*`), and Vivaldi
+helpers are `app.zen-browser.*` rather than `org.mozilla.*`, and on Linux the
+microphone's `zen` or `zen-bin` binary maps to it), and Vivaldi
 (`com.vivaldi.Vivaldi`; `vivaldi-bin` and friends on Linux, `vivaldi.exe` on
 Windows). Arc was missing until #801, so its Meet calls were never detected;
 Vivaldi was missing until #1105, so its calls
@@ -491,7 +533,13 @@ browser call whose page named a code, with Stop when the call ends on,
 keeps its browser's page being read every 2 s for as long as it records, so
 the page naming another call can end it (see Record). That read is the newest
 answer alone, never the remembered page, so one glimpse of another call cannot
-be replayed. When a browser's page is found for a run already
+be replayed. The call it names is kept when the recording stops: the browser
+never left the microphone, so later reads that still name the ended call or
+none cannot snooze it, and Hex starts the call the page named before the stop.
+A read still naming the ended call is taken as that new call (going back to
+the old call in that window is recorded under the new call's name), and the
+new recording keeps the ended code, so its page naming it never ends it.
+When a browser's page is found for a run already
 under way (the first pass had no answer yet), the run keeps counting, now
 toward the known service's 2 s. When no answer names a page, the last page a browser showed while
 it held the microphone names the call for 60 s (`BrowserPageMemory`), so the
@@ -541,6 +589,15 @@ Checks: `a_slow_loop_still_offers_an_unknown_browser_call_after_about_20_seconds
 `keeping_a_different_call_never_ends_the_recording_for_that_code`,
 `a_call_switch_without_a_recorded_code_never_fires`,
 `a_call_switched_to_while_the_browser_stays_on_the_microphone_is_not_snoozed`,
+`a_call_switched_to_before_the_stop_is_detected_while_the_page_still_names_the_ended_one`,
+`a_call_switched_to_before_the_stop_is_detected_from_a_page_that_names_no_call`,
+`forgetting_a_switched_call_snoozes_the_ended_calls_page_again`,
+`a_read_naming_a_third_call_clears_the_switched_call_and_offers_it`,
+`the_snooze_ending_clears_the_switched_call`,
+`a_switched_call_is_forgotten_after_two_minutes_without_a_detection`,
+`a_recording_started_for_a_switched_call_keeps_the_ended_code`,
+`the_page_returning_during_the_grace_forgets_the_switched_call`,
+`a_hand_stop_keeps_the_switched_call`,
 `only_an_automatic_browser_call_with_a_code_keeps_reading_its_page`,
 `keep_recording_disarms_the_call_switch_stop_too`,
 `keep_recording_keeps_the_code_that_was_counting`,
@@ -566,6 +623,37 @@ Checks: `a_slow_loop_still_offers_an_unknown_browser_call_after_about_20_seconds
 `meetings_settings_save_and_ask_for_system_audio` (Linux pane tests). The
 controller loop that turns `Detection::Record` into a recording has no
 automated test; it shares the manual Record path.
+
+`the_offer_menu_stays_usable_past_the_unanswered_deadline` presses … on a
+fixture Slack huddle, opens the rules on that same Rune surface and delivers the scheduled
+20 s timeout. The choices remain clickable; no controller command or policy
+write comes from opening them. `cancel_returns_to_a_timed_clickable_offer` and
+`an_untouched_offer_times_out_without_a_choice` check the compact path.
+The detector withdraws a held offer when its call's snooze ends, another
+detection replaces it, Meetings turns off, or recording begins. The timeout
+and the Record request refer to that offer, not just its app: a late one
+cannot answer a later huddle. These checks exercise fixture input, timers and
+requests, not a native overlay, a live Slack call or a recorder.
+
+The compact offer and the rules fit their labels around 28 pt controls inside
+a 44 pt surface. More and Cancel move the shell's free edge; its corner and
+native window stay put. Reduce motion fades between resting widths instead.
+`the_offer_keeps_its_corner_controls_and_clear_input_margin` checks both
+motions, English and French, the rounded input region and the three 8 pt
+clearances at the end action. `the_offer_has_no_default_key_and_names_each_focus_target`
+checks the Rune actions (native panels do not take keyboard focus).
+`HEX_DETECTED_OFFERS=<folder>` with the `detected_offer_sheet` test renders
+the production view for each detected source on a GPU, using synthetic detector
+inputs and the rendering computer's installed app icons. No network or call is needed.
+
+`a_record_click_keeps_its_corner_until_the_worker_is_live` exercises Record
+on the same surface at each corner, with an immediate or delayed start, a
+second click and Reduce Motion.
+Observed on macOS with synthetic events: the 500 ms open lost no frames of
+the capsule (previously 30 at 60 fps). An AppKit probe addressed mouse events
+to the real panel: one visible window and frame across 50 samples, never key,
+one start command and no stop; the clear margin ignored the pointer. This
+does not exercise the recorder, permission dialogs or native Linux/Windows input.
 
 Sources: [meeting/detection.rs](../../src/meeting/detection.rs),
 [microphone_activity.rs](../../src/microphone_activity.rs),
@@ -610,7 +698,9 @@ Meetings > Settings > Calendar                       // meetings.calendar (macOS
     ├── Remind me before meetings -> on by default
     ├── Remind me -> At start / 1 / 2 / 5 min
     ├── Calendars -> All calendars, or "2 of 3 calendars"; each switched in the menu
-    └── Next 3 meetings: title, "Today · 2:30 PM", provider icon when it has a call link
+    │   └── Labs › Select all calendars: a Select all / Deselect all button beside it (off by default)
+    └── Next 3 meetings: title, "Today · 2:30 PM" ("Today · 14:30" outside
+        English), provider icon when it has a call link
 
 Meeting = not all-day, declined, free, or cancelled, AND has other attendees or a
           Zoom / Google Meet / Teams / Slack huddle / Webex link (URL, location, notes)
@@ -638,6 +728,15 @@ files from older builds stay off. Every calendar is included unless excluded.
 Hex never asks for calendar access at launch: only Connect calendar calls
 `requestFullAccessToEvents` (`NSCalendarsFullAccessUsageDescription`). With
 Meetings off there is no Calendar card, no EventKit read, and no reminder.
+
+Labs › Select all calendars (`calendar-select-all`, macOS, off by default) adds
+one small secondary button beside the Calendars select. While any calendar is
+left out it reads "Select all" and clears `excluded_calendars`, so every
+calendar is included; while every calendar is included it reads "Deselect all"
+and sets `excluded_calendars` to the IDs shown now. Because the setting stores
+exclusions, a calendar added later is still included. The button hides while
+there are no calendars, and each calendar's own switch in the menu stays as it
+is. Off, the Calendars row is exactly as before.
 
 The controller thread reads EventKit (one bounded query, 48 hours ahead, at most
 200 events) when the store's change notification bumps its counter or once a
@@ -688,7 +787,8 @@ Checks: `meetings_need_other_people_or_a_call_link`,
 `an_always_record_reminder_says_so_and_never_offers_record`,
 `the_reminder_counts_down_to_the_start`); and the Linux pane tests
 `the_calendar_asks_for_access_only_when_connect_is_pressed`,
-`a_connected_calendar_saves_reminders_and_lists_meetings`, and
+`a_connected_calendar_saves_reminders_and_lists_meetings`,
+`the_select_all_calendars_lab_saves_every_calendar_at_once`, and
 `denied_calendar_access_links_to_privacy_settings`; the answer checks
 `a_grant_is_full_access_even_while_the_status_is_stale` and
 `a_refusal_is_a_denial_unless_the_request_failed` in
@@ -777,6 +877,7 @@ changes.
 ```ts
 Record (offer, menu bar "Record Meeting", Meetings pane, or voice command)
   -> Title: named meeting OR "<App> call — 2:30 PM" OR "Meeting — 2:30 PM"
+     (times are 12-hour in English and 24-hour, "14:30", elsewhere)
   -> system.wav + microphone.wav, owner-only, Application Support/meetings/<id>
   -> No idle sleep; no dictation mute or media pause // meetings.record
   -> Menu bar: record symbol + elapsed time
@@ -804,20 +905,123 @@ Record (offer, menu bar "Record Meeting", Meetings pane, or voice command)
      │   (the_recording_capsule_follows_the_indicator_setting_mid_recording;
      │   not observed on a real Mac)
      ├── Always dark in either host appearance, including the open Stop and copy rows
-     ├── At rest: a steady recording dot, Dot scope and elapsed time
+     ├── At rest: Dot scope and elapsed time, with no separate recording dot;
+     │   the accessible status names the recording and its title
      │   ├── The dictation HUD's listening field follows the louder fresh RMS
      │   │   from microphone or system audio (not individual speakers). Missing
-     │   │   buffers and those over 300 ms old read as zero. In silence the
-     │   │   beam settles to a still dotted line; the recording dot stays visible.
-     │   │   Reduce Motion holds the HUD's braid still
+     │   │   buffers and those over 300 ms old read as zero. When speech pauses
+     │   │   the beam narrows and dims into a still dotted line; a returning
+     │   │   voice opens it from its current height. The timer keeps ticking.
+     │   │   Reduce Motion holds the braid still
+     │   │   and fades its light without squeezing the rows. Checks:
+     │   │   `a_pause_gathers_the_light_before_extinguishing_it`,
+     │   │   `either_track_can_interrupt_the_release_in_place` (synthetic levels)
+     │   ├── The pill is 151 × 36 pt, its field 78 pt wide (31 columns), with
+     │   │   the rows' 14 pt inset on both sides: the time's right edge is one
+     │   │   line at rest, open and finished (open and finished in a left corner)
+     │   │   (`the_header_keeps_the_rows_inset_at_rest_open_and_finished`)
      │   └── "Microphone is silent" (warning) or, for its first 10 s, "Started
      │       automatically" shows beside the meter
-     ├── Hover -> the pill reveals a panel: Stop opposite the meter and time
-     │   in its header, then Copy new, Copy all, Copy agent prompt; pointer
+     ├── Hover -> the pill reveals four full-width actions beside the header:
+     │   Stop nearest the meter, Copy new, Copy all, Copy agent prompt; pointer
      │   leaving -> eases back to rest (a held press keeps it open). A bottom
      │   corner opens upward, its header nearest the screen edge
+     │   ├── The field widens with the wall, from the rows' 14 pt inset to the
+     │   │   time: 179 pt, 69 columns at the same 2.6 pt pitch, three fewer
+     │   │   for each further digit on the time. It is one field: its free end
+     │   │   is the wall's motion every frame, in whole columns counted from
+     │   │   the held end, no dot is drawn outside its place, the dots that
+     │   │   stay keep their light, and a column that arrives is lit from the
+     │   │   voice's history. In a right corner it is held beside the time,
+     │   │   which stays put; in a left corner it is held at the wall and the
+     │   │   time rides the moving wall 14 pt inside it, so the open and
+     │   │   finished headers match the right corner's (✕ before the time). A
+     │   │   notice in the header keeps its place and its cut while the
+     │   │   field's end, or on the left the time, wipes over it, and has gone
+     │   │   by the time the field is halfway.
+     │   │   Checks: `the_field_widens_with_the_wall_one_whole_column_at_a_time`,
+     │   │   `a_left_corners_field_fills_the_header_and_the_time_rides_the_wall`,
+     │   │   `the_field_keeps_its_light_through_the_opening`,
+     │   │   `the_field_wipes_the_headers_notice_and_never_draws_over_it`
+     │   │   (offscreen Rune; the dots themselves only in
+     │   │   `hud_replay_frames` renders, not on a real Mac)
+     │   ├── Stop and the copies are 2 pt apart, as the raised copy is from
+     │   │   the next, so no two hover fills touch
+     │   │   (`rows_that_can_both_be_filled_are_one_gap_apart`)
+     │   ├── The width leads the height; the actions follow in order, each
+     │   │   only as far as the outline has uncovered it, and leave together.
+     │   │   A pointer that comes and goes mid-way turns the surface round
+     │   │   from where it is: its speed bends over a few frames, never
+     │   │   dropping in one. Stop takes a press only once at least half of
+     │   │   it shows
+     │   └── Checks: stage.rs unit tests; the replays in replay_fixture.rs
+     │       (`the_panel_opens_width_first_and_its_rows_follow_in_order`,
+     │       `an_interrupted_panel_turns_round_without_a_stop_or_a_jump`,
+     │       `reduced_motion_lands_the_surface_and_only_fades`). Offscreen
+     │       Rune with a synthetic pointer; not seen in a native window
+     ├── Stop -> the icon, label and whitespace use the same 242 × 44 pt row
+     │   and hover/focus bounds as the copies. The plain arrow stays put;
+     │   dragging the meter band repositions, dragging a row does not.
+     │   A click queues one stop immediately. The pill stays open and the
+     │   same row says “Stopping…” in place, its icon and first letters
+     │   unmoved, with the waveform and elapsed time until capture ends.
+     │   The worker closing its sources, not the click, replaces that row
+     │   with “Transcribing…” and lets the waveform release and fade. That
+     │   title sits on the rows' icon line, 24 pt left of “Stopping…” on one
+     │   baseline, so it waits until Stop's row has all but gone: neither
+     │   moves and the two are never read together
+     │   (`stops_row_has_gone_before_the_heading_arrives_and_neither_moves`).
+     │   Publication brings back the copies and Close on the
+     │   same surface; it does not wait for notes or a minimum animation time.
+     │   Short titles keep the open recording header's height. Longer ones
+     │   wrap at their final width (up to three lines). The timer keeps its
+     │   baseline. Notes grow from the outer edge, past the copy rows, without
+     │   moving a copy button away from the pointer.
+     │   A recorder failure yields to the Meetings error instead of showing a
+     │   finished transcript. Checks: `stop_says_stopping_in_place_and_the_field_cools` and
+     │   `HEX_HUD_REPLAY=<dir> cargo test --bin hex hud_replay_frames` for
+     │   every frame of the whole path (offscreen Rune).
+     │   ├── A title or summary whose words change lets the old words fade
+     │   │   out before the new ones fade in, in the same line. Titles that
+     │   │   arrive while the old words are still going are skipped: only
+     │   │   the last is drawn, never two at once. Check:
+     │   │   `several_titles_in_quick_succession_show_one_at_a_time`
+     │   ├── Once capture has ended the time holds and the field only cools,
+     │   │   whatever the meters read. Check:
+     │   │   `after_capture_ends_the_time_holds_and_the_field_only_cools`
+     │   └── Not done: the length can change by a second, in one frame, when
+     │       the finished meeting's own length replaces the recording's; a
+     │       summary line's first words wipe on but its removal is one frame.
+     ├── Closing any capsule (✕, Not now, the offer's timeout, a refused
+     │   start, a withdrawn reminder or call-ended notice, the indicator
+     │   turned off) -> it is closed at once: nothing in it takes input and
+     │   no command can come from it. What it showed fades, softens and
+     │   shrinks 4% toward its saved corner over about a quarter of a second,
+     │   and its window hides only then. A surface refused mid-contraction
+     │   carries on contracting as it goes and never says “Starting…” on
+     │   the way out. A capsule shown from hidden arrives the same way in
+     │   reverse; one shown while the last is still leaving carries on from
+     │   the strength the surface has, with the new contents (it is not a
+     │   crossfade of two surfaces). Notes that arrive for a closed meeting
+     │   change nothing. Reduce Motion fades without shrinking or softening.
+     │   Checks: exits_tests.rs
+     │   (`not_now_and_a_timeout_let_the_offer_go_over_several_frames`,
+     │   `a_refused_start_goes_where_it_is_without_saying_starting`,
+     │   `closing_before_the_notes_arrive_keeps_what_it_showed_until_it_has_gone`,
+     │   `an_exit_interrupted_by_another_offer_turns_round_and_stays_shown`,
+     │   `what_is_leaving_takes_no_input`,
+     │   `the_other_capsules_arrive_and_leave_the_same_way` for the
+     │   reminder, the call-ended notice and the automatic-start notice,
+     │   `a_capsule_leaves_toward_whichever_corner_it_is_saved_in` at all
+     │   four corners). Offscreen Rune; the deferred
+     │   window hide, and click-through while a capsule leaves, are not
+     │   verified in a native window. On Windows the window keeps the size
+     │   it had while the capsule leaves.
      ├── Drag -> follows the pointer; release -> snaps to the corner nearest
-     │   its centre and saves recording_indicator_corner (window settings too)
+     │   its centre and saves recording_indicator_corner (window settings too;
+     │   macOS, Windows, Linux X11, and XWayland when GNOME floats it there,
+     │   though Windows and X11 have not been tried on a real machine; only a
+     │   native Wayland capsule returns to the corner it started in)
      ├── Copy new -> copies the turns not yet copied or pasted, through
      │   the click (see meetings.copy-through-now)
      │   ├── Shares Option-Control-V's cursor: either one advances both
@@ -846,7 +1050,7 @@ Detected app leaves the microphone for about 3 s     // meetings.call-ended
          observed on a real Mac)
   -> No timeout; nothing stops automatically
 
-Panel capsules move like the recording capsule (macOS; #1093, graduated from Labs) // meetings.panel-drag
+Panel capsules move like the recording capsule (#1093, graduated from Labs; only a native Wayland capsule still returns to its corner) // meetings.panel-drag
   The panel capsules: offer, reminder, left the call, the finished meeting,
   Recording automatically
   -> Each opens in the saved recording_indicator_corner (read as it shows)
@@ -857,7 +1061,9 @@ Panel capsules move like the recording capsule (macOS; #1093, graduated from Lab
      │   where it was let go into that corner on the GLIDE spring (0.32 s, no
      │   bounce), carrying the throw's speed, and the corner is saved, so the
      │   recording capsule moves there too. A press mid-glide catches it
-     │   where it is. Reduce Motion, or no screen size -> it jumps there
+     │   where it is. Reduce Motion -> it jumps into the new corner; with no
+     │   screen to measure (a native Wayland capsule) -> it returns to the
+     │   corner it started in
      ├── Press on a button -> the button, as before
      └── Escape mid-drag -> back where it was, nothing saved
   -> The finished meeting opens in the corner its recording ended in
@@ -885,7 +1091,12 @@ meetings.stop_when_call_ends) // meetings.auto-stop
      ├── Keep recording -> nothing stops for this absence; leaving again re-arms
      ├── Stop & transcribe -> stops now
      └── 30 s pass -> Stop & Transcribe, as the menu bar's; logged
-         "meeting recording stopped automatically after its call ended"
+         "meeting recording stopped automatically after its call ended";
+         its call's snooze ends as after a hand stop, so the app retaking the
+         microphone (a mute or an audio restart that outlasted the grace) is
+         a new call Always record records again rather than the call staying
+         snoozed for the rest of it. Check:
+         `an_automatic_call_ended_stop_offers_the_call_again_when_it_returns`
   -> A browser that never releases the microphone between calls (Arc, #1775):
      the microphone and output stay open after leaving one call and joining
      the next, so the absence above never comes
@@ -908,6 +1119,17 @@ meetings.stop_when_call_ends) // meetings.auto-stop
      │   a third code still ends the recording
      ├── The next call is detected normally once the recording finishes: the
      │   new code is not snoozed by the old one (#1113)
+     ├── The call the page named is remembered when the stop comes: the
+     │   browser never left the microphone, so a read that still names the
+     │   ended call, or none, is taken as that new call, and it starts once
+     │   the recording finishes. Going back to the old call in that window is
+     │   recorded under the new call's name
+     ├── The new recording keeps the ended code: its page naming it never
+     │   ends it; a third code still does
+     ├── The memory clears on a detection, a read naming another call, the
+     │   call app leaving the microphone, Keep recording, the page returning
+     │   to the recorded call during the grace (a hand stop keeps it), while
+     │   Meetings is off, and two minutes after the page named the new call
      └── Only calls whose page names a code (Google Meet today): a browser
          Hex can't read (no Automation, no web area) names one only from a
          code-only tab title, and a named title names none, so it keeps the
@@ -1229,22 +1451,59 @@ Stop & Transcribe
   -> Join on one timeline -> Echo suppression -> Final publication
 
 Hex quits while recording                           // meetings.quit
-  -> Capture stops; WAVs and manifest finalized; no chunk starts, no model loads
-  -> Interrupted with its rolling draft + final.pending beside the manifest
+  -> The drain installs any staged update, then joins the meeting controller;
+     capture stops, no chunk starts
+  -> WAVs and manifest finalized; Interrupted with its rolling draft and
+     final.pending beside the manifest
 Hex quits during Stop & Transcribe's final pass (#1284)
   -> Same: Interrupted + final.pending, never Failed with "Hex is quitting"
-  -> Next launch, Meetings on, no recording, once the dictation engine is up
-     (or 30 s without one) -> full-WAV final pass -> Complete + Markdown + notes
-     ├── Quit again or model not installed -> stays pending
-     └── Other failure -> stays Interrupted with the error and its draft
+Hex or Hex's process dies mid-recording (no final.pending)   // meetings.recovery
+  -> Next launch selects every unlocked folder whose manifest is Starting,
+     Recording, or Transcribing, or Interrupted with no error and no published
+     final transcript; a final.pending or recovery.attempt marker is finished
+     even beside a published transcript. Failed meetings are never touched
+  -> Each track whose data size is unset with audio behind it or overlong is
+     repaired from its file length (whole blocks, synced, no trailing chunk
+     absorbed); an empty finalised track is left as it is. The manifest's
+     sample counts, duration, and ended_at come from the audio and replace
+     list_all's relabel, which stamps the relaunch time
+  -> recovery.attempt counts the attempts, written durably before the pass.
+     A process that dies during it leaves the count: the next launch retries
+     once, and after the second death marks the meeting Interrupted
+     ("recovery did not finish") and never retries that audio
+  -> The pass holds the same in-flight flag as a recording, so a quit gives it
+     the meeting bound and Restart to update waits for it
+  -> final.pending -> the same next-launch final pass as a quit
+Any of the above, next launch, Meetings on, no recording, engine up (or 30 s)
+  -> A pass stops between meetings if a recording starts, and is offered
+     again when Hex is next idle
+  -> Full-WAV final pass -> Complete + Markdown export + notes
+  ├── Quit again or model not installed -> stays pending
+  └── Other failure -> stays Interrupted with the error and its draft
 ```
 
-Quitting gives its workers 5 s before `_exit`, and the final pass of a long
-meeting can take longer, or load a model once the dictation engine is gone.
-Sources: `record`, `finish_pending` in [meeting.rs](../../src/meeting.rs),
-`PendingFinals` in [meeting/watcher.rs](../../src/meeting/watcher.rs). Check:
-`quitting_mid_meeting_loads_no_model_and_finishes_in_time`. No repeatable
-driver quits a real recording and relaunches.
+Quitting gives its workers 5 s before `_exit`, extended up to 30 s from the
+quit's start while a recording or recovery is in flight
+(`meeting::recording`), and the final pass of a long meeting can take longer,
+or load a model once the dictation engine is gone. Retention waits for a
+`final.pending` draft, and for a stranded meeting only while Meetings is on
+and its model is installed (`recovery::can_recover`, which a CLI or MCP
+reader answers from `settings.json`); with Meetings off, stranded meetings
+expire like any other, as the expiry pass already documents.
+Sources: `record` in [meeting.rs](../../src/meeting.rs), `recording` in
+[meeting/recording.rs](../../src/meeting/recording.rs), and `PendingFinals`,
+`recover`, `repair_wav` in [meeting/recovery.rs](../../src/meeting/recovery.rs).
+Checks: `quitting_mid_meeting_loads_no_model_and_finishes_in_time`,
+`a_zeroed_wav_header_is_repaired_from_its_file_length`,
+`an_empty_finalised_track_is_finished_not_unfinalised`,
+`a_trailing_chunk_is_not_absorbed_into_the_audio`,
+`a_stranded_recording_is_selected_for_recovery`,
+`a_published_transcript_with_a_pending_marker_is_still_selected`,
+`a_recovery_that_died_twice_is_marked_and_never_retried`,
+`a_relabelled_meeting_takes_its_duration_from_the_audio`,
+`recovery_fills_the_manifest_from_the_repaired_audio`, and
+`restart_to_update_waits_while_a_meeting_records`. No repeatable driver quits a
+real recording and relaunches.
 
 Design choice: chunks are background jobs on the dictation transcription engine
 (`TranscriptionEngine::background`), using whatever model dictation has loaded,
@@ -1657,7 +1916,8 @@ While recording, setting on, model available           // meetings.title.provisi
      (rolling chunks, echo-filtered)
   -> ≥ 90 s of speech (or ≥ 600 words; ≥ 60 words either way)
      -> waits (≤30 s) while dictation is busy
-     -> ONE title-only call over the transcript so far (≤5,000 chars, 30 s timeout)
+     -> ONE title-only call over the transcript so far (≤5,000 chars, 30 s
+        timeout); asks for the title in the language spoken in the transcript
   -> Recorder stores provisional_title in the manifest
      -> menu bar "Recording · <title>", Meetings pane list and detail
   -> Refreshed once when speech reaches 10 minutes; a failure retries a minute
@@ -1669,6 +1929,9 @@ While recording, setting on, model available           // meetings.title.provisi
 Final publication complete                               // meetings.notes
   -> meeting-notes thread, utility QoS; waits (≤30 s) while dictation is busy
   -> ONE call over a bounded excerpt, no map-reduce
+     ├── Language -> the transcript's own; the instructions say "You MUST
+     │   write the title and summary in the language spoken in the transcript
+     │   … never translate them", and never name a language
      ├── Vocabulary (#1154; graduated from Labs) -> "Names and terms that
      │   may appear: …" (≤30 vocabulary terms, read at each generation,
      │   Regenerate included) ahead of the calendar context; its length comes
@@ -1718,10 +1981,22 @@ Finished meeting panel -> the shown title; "Writing a title and summary with
   Apple Intelligence…" under it, then the summary (at most three lines)
 ```
 
+Language rule: the final notes instructions (`NOTES_INSTRUCTIONS` in
+[meeting/notes.rs](../../src/meeting/notes.rs)) and the provisional-title
+instructions (`TITLE_INSTRUCTIONS`) require the title and summary in the
+language spoken in the transcript, and say those instructions are in English,
+so an English prompt never pulls another language's meeting into English. The
+live chapter instructions carry the same rule, and the boundary pass is told
+the transcript's language never changes which L numbers it lists
+(checks: `prompts_keep_the_transcripts_language` and
+`chapter_prompts_keep_the_transcripts_language`).
+
 Title rule: the shown title is the user's title unless it is still the default
-`<App> call — 2:30 PM` / `Meeting — 2:30 PM`; then the final notes title, else
-the provisional title, else the default. Named or renamed meetings keep their
-name. By default the exported file keeps its name when the title changes, so
+`<App> call — 2:30 PM` / `Meeting — 2:30 PM` (12-hour in English, 24-hour such
+as `14:30` elsewhere; an old 12-hour default still reads as one in any
+language); then the final notes title, else the provisional title, else the
+default. Named or renamed meetings keep their name. By default the exported
+file keeps its name when the title changes, so
 links, open editors, and Reveal keep working. With Export › Descriptive meeting
 file names on (off by default), applying notes, refining chapters that change
 the title, or renaming the meeting renames the file in place to
@@ -1755,6 +2030,7 @@ FoundationModels bridge [apple_intelligence.swift](../../src/apple_intelligence.
 [build.rs](../../build.rs); the recorder loop in `record` in
 [meeting.rs](../../src/meeting.rs). Checks in `meeting::notes::tests` (fake
 model): `a_short_transcript_is_sent_whole_in_one_call`,
+`prompts_keep_the_transcripts_language`,
 `long_meetings_are_excerpted_from_the_opening_middle_and_ending`,
 `context_overflow_halves_the_excerpt_once_and_failures_stop`,
 `vocabulary_terms_lead_the_notes_prompt_and_share_its_budget`,
@@ -1763,9 +2039,10 @@ model): `a_short_transcript_is_sent_whole_in_one_call`,
 `generated_and_provisional_titles_replace_only_default_titles`,
 `older_notes_with_points_action_items_and_decisions_still_read`,
 `notes_are_inserted_above_the_transcript_and_regenerate_idempotently`, and
-`user_edits_outside_the_notes_block_are_preserved`; menu text in
-`meeting_menu_offers_one_action_per_state`. The recorder thread, manifest write,
-and menu/pane refresh during a real recording are unexercised.
+`user_edits_outside_the_notes_block_are_preserved`; chapter prompts in
+`meeting::chapters::tests`' `chapter_prompts_keep_the_transcripts_language`;
+menu text in `meeting_menu_offers_one_action_per_state`. The recorder thread,
+manifest write, and menu/pane refresh during a real recording are unexercised.
 
 Real model (debug CLI): `hex meeting summarize <file.md> [--excerpt-chars N]`
 times the provisional title at the point a recording would ask for it, then the
@@ -2060,6 +2337,11 @@ Granola import: see [granola-import.md](../plans/granola-import.md).
 - Titles and summaries have not run after a real recording in the app; the CLI
   path exercised the real model, and the provisional-title thread, its manifest
   write, and the menu/pane refresh are unexercised in a live recording.
+- The transcript-language rule in the notes and chapter prompts is prompt-level
+  only: it has not run on a real Mac against a non-English meeting, so whether
+  Apple Intelligence and a given OpenCode model honour it, and how they word a
+  title or summary whose script has no spaces or `.`/`!`/`?` sentence ends
+  (`clean_title`, `clean_summary`), are unmeasured.
 - Live chapters (Labs) have not run in a real recording: the worker,
   manifest writes, title updates, menu bar Copy Section, and the boundary pass
   after publication ran only in unit tests and the debug CLI over one synthetic

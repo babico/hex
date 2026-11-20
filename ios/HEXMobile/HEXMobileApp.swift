@@ -5,10 +5,12 @@ struct HEXMobileApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var dictation = DictationController.shared
     @State private var openedFromKeyboard = Self.initialOpenedFromKeyboard
-    @State private var showSetup = false
+    @State private var showSetup = SettingsSnapshotFixture.showsSetupSheet
 
     init() {
         FullKeyboardSettings().applyLaunchArguments()
+        TypingLogSettings().applyLaunchArguments()
+        SettingsSnapshotFixture.applyDefaults()
     }
 
     private static var initialOpenedFromKeyboard: Bool {
@@ -27,6 +29,8 @@ struct HEXMobileApp: App {
                 KeyboardSnapshotStage(scene: keyboardScene)
             } else if let fullKeyboardScene = FullKeyboardSnapshotStage.requestedScene {
                 FullKeyboardSnapshotStage(scene: fullKeyboardScene)
+            } else if let experimentsScene = ExperimentsSnapshotStage.requestedScene {
+                ExperimentsSnapshotStage(scene: experimentsScene)
             } else if let hostedScene = HostedKeyboardConversationStage.requestedScene {
                 HostedKeyboardConversationStage(scene: hostedScene, dictation: dictation)
             } else {
@@ -47,8 +51,9 @@ struct HEXMobileApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .background {
-                        dictation.noteSceneDidEnterBackground()
                         openedFromKeyboard = false
+                    } else if phase == .active {
+                        dictation.endStaleLiveActivities()
                     }
                 }
             }

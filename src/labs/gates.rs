@@ -182,24 +182,27 @@ pub fn double_tap_modifiers() -> bool {
     on(DOUBLE_TAP_MODIFIERS) && Feature::DoubleTapModifiers.on_this_os()
 }
 
+/// A key or click joining a held modifier-only shortcut a second or more
+/// after it went down is left to the app in front, so the release still
+/// finishes the dictation (macOS and Windows; read by each OS's shortcut
+/// machine as the key or click arrives).
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+pub fn hold_through_keys() -> bool {
+    on(HOLD_THROUGH_KEYS) && Feature::HoldThroughKeys.on_this_os()
+}
+
 /// Parakeet Ultra joins the catalog (read wherever a model is listed,
 /// chosen, or run).
 pub fn parakeet_ultra() -> bool {
     on(PARAKEET_ULTRA)
 }
 
-/// History's summary of retained dictations and `hex history stats` (read
-/// when the History pane reloads and when the command starts).
+/// Labs › Dictation stats: History's summary of retained dictations, the
+/// daily rollup that outlives retention, and `hex history stats` (read as
+/// each entry is recorded, when the History pane reloads, and when the
+/// command starts). Off, the rollup is never written or read.
 pub fn history_stats() -> bool {
     on(HISTORY_STATS)
-}
-
-/// History selects several dictations at once, with Shift, Command (Control
-/// on Windows and Linux), or a drag, and copies or deletes them together.
-/// The window reads the same switch from `settings.labs`, as it reads Keep
-/// recordings; this process's copy is logged at launch with the other labs.
-pub fn history_multi_select() -> bool {
-    on(HISTORY_MULTI_SELECT)
 }
 
 /// The menu bar's Copy Recent Dictation submenu (macOS; read each time the
@@ -448,21 +451,8 @@ pub fn k_quant_models() -> bool {
     K_QUANT_MODELS.load(Ordering::Acquire) && Feature::KQuantModels.on_this_os()
 }
 
-/// Labs › YOLO mode: how long a shortcut dictation must be held
-/// for Return to follow its paste, or `None` while the lab is off (read as
-/// each dictation's output is committed).
-pub fn yolo_mode() -> Option<std::time::Duration> {
-    // The lab has its own atomic, loaded here
-    // first in a process that never applied its settings.
-    let _ = state();
-    let seconds = YOLO_MODE_SECONDS.load(Ordering::Acquire);
-    (seconds > 0 && Feature::YoloMode.on_this_os())
-        .then(|| std::time::Duration::from_secs(u64::from(seconds)))
-}
-
-/// The apps Labs › YOLO mode sends in; empty means
-/// every app.
-pub fn yolo_mode_apps() -> Vec<String> {
+/// The apps YOLO mode sends in (empty: everywhere), or None while off.
+pub fn yolo_mode_apps() -> Option<Vec<String>> {
     let _ = state();
     YOLO_MODE_APPS
         .read()
@@ -470,8 +460,30 @@ pub fn yolo_mode_apps() -> Vec<String> {
         .clone()
 }
 
+/// Labs › Paste Last picker: holding Paste Last opens a picker of recent
+/// dictations and annotations, and History lists them together (macOS; read
+/// where the picker, History's unified list, and the cancel-path words start).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn paste_last_picker() -> bool {
+    // The state word is full, so the switch has its own atomic, loaded here
+    // first in a process that never applied its settings.
+    let _ = state();
+    PASTE_LAST_PICKER.load(Ordering::Acquire) && Feature::PasteLastPicker.on_this_os()
+}
+
+/// Labs › Transcribe dropped audio: a file with one of this build's
+/// extensions, dropped on the window, is transcribed in this process and saved
+/// as a text file beside it (read as each drop starts, and by the window's
+/// drop target).
+pub fn drop_transcribe() -> bool {
+    // The state word is full, so the switch has its own atomic, loaded here
+    // first in a process that never applied its settings.
+    let _ = state();
+    DROP_TRANSCRIBE.load(Ordering::Acquire) && Feature::DropTranscribe.on_this_os()
+}
+
 /// How long the speech model may sit unused before the engine unloads it,
-/// while Labs › Unload model when idle is on.
+/// while Labs › Free memory when idle is on.
 pub fn unload_idle() -> Option<std::time::Duration> {
     let state = state();
     (state & UNLOAD_IDLE != 0)

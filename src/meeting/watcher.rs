@@ -16,17 +16,25 @@ use crate::calendar::{CalendarMeeting, ReminderScheduler, ReminderUpdate};
 use crate::dictation::context::ContextSnapshot;
 use crate::meeting::detection::{
     AutoStop, BrowserPageMemory, CallPresence, CallSwitch, Detection, MeetingCandidate,
-    MeetingDetector, candidate_from_microphone,
+    MeetingDetector, OfferId, candidate_from_microphone,
 };
+use crate::meeting::recovery::PendingFinals;
 use crate::meeting::{self, MeetingCalendar, MeetingRequest, MeetingStart, TrackWarning};
 use crate::microphone_activity::{ActiveMicrophoneApplication, active_microphone_applications};
 
+use call_switch::{
+    disarm_call_stop_unless_watching, watching_call_switch, withdraw_call_switch_stop,
+};
+
+mod call_switch;
+mod publication;
+
 pub(crate) enum ControllerCommand {
-    Record(MeetingCandidate),
+    Record(MeetingCandidate, Option<OfferId>),
     Dismiss,
     /// The offer's capsule closed on its timeout, unanswered: the call is
     /// offered again once its app releases and retakes the microphone.
-    OfferTimedOut,
+    OfferTimedOut(OfferId),
     Stop,
     /// Import a local audio file as a meeting (macOS; Labs › Import audio).
     Import(PathBuf),
@@ -53,7 +61,8 @@ pub(crate) enum ControllerCommand {
 }
 
 pub(crate) enum ControllerEvent {
-    Offer(MeetingCandidate),
+    Offer(OfferId, MeetingCandidate),
+    OfferWithdrawn(OfferId),
     /// A calendar meeting is about to start. `automatic` when its call
     /// service is set to Always record.
     Reminder {
@@ -65,7 +74,8 @@ pub(crate) enum ControllerEvent {
     ReminderWithdrawn {
         occurrence: String,
     },
-    Starting,
+    /// The accepted offer, or None for a start that did not come from one.
+    Starting(Option<OfferId>),
     /// `automatic` when the provider is set to Always record.
     RecordingStarted {
         id: String,
@@ -81,6 +91,9 @@ pub(crate) enum ControllerEvent {
     SourceWarning {
         warning: Option<TrackWarning>,
     },
+    /// Stop requested; the capture worker may still be closing its sources.
+    Stopping,
+    /// Both sources have stopped. The worker is preparing the final transcript.
     Transcribing,
     /// `auto_stop` when the recording stops on its own after
     /// [`crate::meeting::detection::AUTO_STOP_GRACE`] (Stop when the
@@ -102,7 +115,7 @@ pub(crate) enum ControllerEvent {
     ImportFailed {
         error: String,
     },
-    NotesStarted,
+    NotesProgress(String),
     NotesFinished(Box<meeting::MeetingManifest>),
 }
 
@@ -126,6 +139,16 @@ struct ActiveRecording {
     updates: Receiver<meeting::RecordingUpdate>,
     reported_started: bool,
     worker: JoinHandle<Result<meeting::MeetingManifest>>,
+}
+
+impl ActiveRecording {
+    /// Request a stop and end the snooze; the worker confirms when capture ends.
+    fn end(&self, detector: &mut MeetingDetector, events: &SyncSender<ControllerEvent>) {
+        if !self.stop.swap(true, Ordering::Relaxed) {
+            detector.recording_stopped();
+            let _ = events.send(ControllerEvent::Stopping);
+        }
+    }
 }
 
 /// The meeting state mirrored into the menu bar.
@@ -178,13 +201,14 @@ pub(crate) fn controller_loop(
 
     while !shutdown.load(Ordering::Relaxed) {
         let enabled = crate::app_settings::meetings_enabled();
+        let previous_offer = detector.open_offer();
         poll_import(&mut importing, &events);
         let requested_commands = meeting_requests
             .try_iter()
             .take(8)
             .map(|request| match request {
                 MeetingRequest::Start { title } => {
-                    ControllerCommand::Record(MeetingCandidate::manual_titled(title))
+                    ControllerCommand::Record(MeetingCandidate::manual_titled(title), None)
                 }
                 MeetingRequest::Stop => ControllerCommand::Stop,
                 MeetingRequest::Summarize(id) => ControllerCommand::Summarize(id),
@@ -207,6 +231,12 @@ pub(crate) fn controller_loop(
         pending_finals.poll(enabled, recording.is_some(), &events);
         expiry.poll();
 
+        // Meetings off: detection never runs, so a remembered switch must not
+        // outlive the setting and start a call when it comes back.
+        if recording.is_none() && !enabled {
+            detector.forget_switched_call();
+        }
+
         if recording.is_none() && enabled {
             let choices = crate::app_settings::meeting_provider_choices();
             match detect_meeting(
@@ -220,11 +250,20 @@ pub(crate) fn controller_loop(
                     continue;
                 }
                 Ok(Some(Detection::Offer(candidate))) => {
-                    let _ = events.send(ControllerEvent::Offer(candidate));
+                    // Offers record by hand, which never watches a page: the
+                    // call whose page named this one is not kept for it.
+                    detector.take_switched_from();
+                    if let Some(id) = detector.open_offer() {
+                        let _ = events.send(ControllerEvent::Offer(id, candidate));
+                    }
                 }
                 Ok(Some(Detection::Record(candidate))) => {
-                    let start = reminders.start_for(&candidate);
-                    start_recording(&mut recording, &mut reminders, start, true, &events);
+                    let mut start = reminders.start_for(&candidate);
+                    // Detected while the page still named the stopped call:
+                    // this recording keeps that code, so the page naming it
+                    // never ends this one (#1896).
+                    start.switched_from = detector.take_switched_from();
+                    start_recording(&mut recording, &mut reminders, start, true, None, &events);
                 }
                 Ok(None) => {}
             }
@@ -236,6 +275,14 @@ pub(crate) fn controller_loop(
             // back as fresh when detection resumes. A recording that watches
             // its browser's page for another call keeps reading it.
             browser.reset();
+        }
+        if !enabled || recording.is_some() {
+            detector.withdraw_offer();
+        }
+        if let Some(id) = previous_offer
+            && detector.open_offer() != Some(id)
+        {
+            let _ = events.send(ControllerEvent::OfferWithdrawn(id));
         }
         thread::sleep(Duration::from_millis(500));
     }
@@ -307,95 +354,6 @@ impl MeetingExpiry {
     }
 }
 
-/// How long finishing pending transcripts waits for the dictation engine
-/// before loading its own model, as a recording without one does.
-const ENGINE_GRACE: Duration = Duration::from_secs(30);
-
-/// Finishes, once per launch, the transcripts of meetings Hex quit while
-/// recording. It waits for the dictation engine so the work borrows its
-/// model rather than loading a second copy.
-struct PendingFinals {
-    since: Instant,
-    /// The launch sweep for abandoned import folders ran.
-    swept: bool,
-    checked: bool,
-    worker: Option<JoinHandle<()>>,
-}
-
-impl PendingFinals {
-    fn new() -> Self {
-        Self {
-            since: Instant::now(),
-            swept: false,
-            checked: false,
-            worker: None,
-        }
-    }
-
-    fn poll(&mut self, enabled: bool, recording: bool, events: &SyncSender<ControllerEvent>) {
-        // Before the pending pass, and whatever the Meetings opt-in, remove
-        // folders a crashed or quitting import left without a manifest.
-        if !self.swept {
-            self.swept = true;
-            meeting::sweep::remove_orphaned_imports();
-        }
-        if self.checked
-            || !enabled
-            || recording
-            || (crate::transcription::engine::TranscriptionEngine::shared().is_none()
-                && self.since.elapsed() < ENGINE_GRACE)
-        {
-            return;
-        }
-        self.checked = true;
-        let ids = meeting::pending_final_transcripts();
-        if ids.is_empty() {
-            return;
-        }
-        let events = events.clone();
-        self.worker = thread::Builder::new()
-            .name("meeting-pending-finals".into())
-            .spawn(move || {
-                for id in ids {
-                    if crate::desktop::process_exit::quitting() {
-                        return;
-                    }
-                    match meeting::finish_pending(&id) {
-                        Ok(Some(manifest))
-                            if manifest.status == meeting::MeetingStatus::Complete =>
-                        {
-                            tracing::info!(meeting = id, "finished a pending meeting transcript");
-                            if meeting::notes_wanted() {
-                                start_notes(manifest.id, &events);
-                            }
-                        }
-                        Ok(Some(manifest)) => {
-                            tracing::info!(
-                                meeting = id,
-                                status = ?manifest.status,
-                                "left a pending meeting for the next launch"
-                            );
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            tracing::warn!(%error, meeting = id, "could not finish a pending meeting transcript");
-                        }
-                    }
-                }
-            })
-            .map_err(|error| tracing::error!(%error, "could not start pending meeting transcripts"))
-            .ok();
-    }
-
-    fn join(self) {
-        if let Some(worker) = self.worker
-            && worker.join().is_err()
-        {
-            tracing::error!("pending meeting transcripts panicked");
-        }
-    }
-}
-
 fn handle_command(
     recording: &mut Option<ActiveRecording>,
     importing: &mut Option<ImportWorker>,
@@ -406,7 +364,7 @@ fn handle_command(
     events: &SyncSender<ControllerEvent>,
 ) {
     match command {
-        ControllerCommand::Record(_) | ControllerCommand::RecordMeeting { .. } if !enabled => {
+        ControllerCommand::Record(..) | ControllerCommand::RecordMeeting { .. } if !enabled => {
             tracing::warn!("ignored a meeting recording request while meetings are off");
         }
         ControllerCommand::Import(_) if !enabled => {
@@ -419,14 +377,16 @@ fn handle_command(
             });
         }
         ControllerCommand::Import(path) => start_import(recording, importing, path, events),
-        ControllerCommand::Record(candidate) if recording.is_none() => {
+        ControllerCommand::Record(candidate, offer)
+            if recording.is_none() && (offer.is_none() || offer == detector.open_offer()) =>
+        {
             tracing::info!(
                 source = candidate.source.label(),
                 application = candidate.application.as_deref(),
                 "meeting recording started on request"
             );
             let start = reminders.start_for(&candidate);
-            start_recording(recording, reminders, start, false, events);
+            start_recording(recording, reminders, start, false, offer, events);
         }
         ControllerCommand::RecordMeeting { meeting, join } => {
             reminders.scheduler.answered(&meeting.occurrence());
@@ -448,6 +408,7 @@ fn handle_command(
                 reminders,
                 calendar_start(&meeting),
                 false,
+                None,
                 events,
             );
         }
@@ -471,13 +432,8 @@ fn handle_command(
             tracing::info!("calendar meeting reminder dismissed");
         }
         ControllerCommand::Stop => {
-            if let Some(active) = recording.as_ref()
-                && !active.stop.swap(true, Ordering::Relaxed)
-            {
-                // Stopped by hand: the next call in the same app is offered
-                // once this one has left the microphone for a few seconds.
-                detector.recording_stopped();
-                let _ = events.send(ControllerEvent::Transcribing);
+            if let Some(active) = recording.as_ref() {
+                active.end(detector, events);
             }
         }
         ControllerCommand::KeepRecording => {
@@ -485,14 +441,17 @@ fn handle_command(
                 let changed = active.call_switch.changed();
                 let page_stop = active.call_stop.disarm();
                 active.call_switch.keep();
+                // Kept through, the page's next call never starts on this
+                // stop's behalf.
+                detector.forget_switched_call();
                 if active.auto_stop.disarm() || changed || page_stop {
                     tracing::info!("kept recording after the call ended");
                 }
             }
         }
         ControllerCommand::Summarize(id) => start_notes(id, events),
-        ControllerCommand::OfferTimedOut => detector.offer_timed_out(),
-        ControllerCommand::Dismiss | ControllerCommand::Record(_) => {}
+        ControllerCommand::OfferTimedOut(id) => detector.offer_timed_out(id),
+        ControllerCommand::Dismiss | ControllerCommand::Record(..) => {}
     }
 }
 
@@ -508,6 +467,10 @@ struct Start {
     /// that browser's page for another call under Stop when the call
     /// ends. Calendar and manual recordings have none.
     call: Option<String>,
+    /// The code of the call whose recording stopped while its page kept
+    /// naming it, when this recording was detected in its place: it is kept,
+    /// so the page still naming it never ends this one.
+    switched_from: Option<String>,
 }
 
 impl Start {
@@ -517,6 +480,7 @@ impl Start {
             title: candidate.title.clone(),
             app_label: candidate.source.label().into(),
             call: candidate.call.clone(),
+            switched_from: None,
         }
     }
 }
@@ -539,6 +503,7 @@ fn calendar_start(meeting: &CalendarMeeting) -> Start {
             .map_or("Meeting", |provider| provider.label())
             .into(),
         call: None,
+        switched_from: None,
     }
 }
 
@@ -873,6 +838,7 @@ fn start_recording(
     reminders: &mut Reminders,
     start: Start,
     automatic: bool,
+    offer: Option<OfferId>,
     events: &SyncSender<ControllerEvent>,
 ) {
     // `Starting` closes a showing reminder; no reminder shows over a
@@ -890,11 +856,11 @@ fn start_recording(
     // Stop can send six updates before the controller next drains them.
     let (update_sender, updates) = mpsc::sync_channel(16);
     let application = start.meeting.application.clone();
-    let call_switch = CallSwitch::new(start.call);
+    let call_switch = CallSwitch::with_kept(start.call, start.switched_from);
     let meeting_start = start.meeting;
     let worker =
         thread::spawn(move || meeting::record(meeting_start, &worker_stop, Some(update_sender)));
-    let _ = events.send(ControllerEvent::Starting);
+    let _ = events.send(ControllerEvent::Starting(offer));
     *recording = Some(ActiveRecording {
         title: start.title,
         application,
@@ -942,9 +908,8 @@ fn poll_recording(
                     let _ = events.send(ControllerEvent::SourceWarning { warning });
                 }
                 meeting::RecordingUpdate::Transcribing => {
-                    if !active.stop.swap(true, Ordering::Relaxed) {
-                        let _ = events.send(ControllerEvent::Transcribing);
-                    }
+                    active.end(detector, events);
+                    let _ = events.send(ControllerEvent::Transcribing);
                 }
             }
         }
@@ -957,23 +922,19 @@ fn poll_recording(
         let active = recording
             .take()
             .ok_or_else(|| eyre!("recording disappeared"))?;
-        let event = match active.worker.join() {
-            Ok(Ok(manifest)) => {
-                if manifest.status == meeting::MeetingStatus::Complete && meeting::notes_wanted() {
-                    start_notes(manifest.id.clone(), events);
-                }
-                ControllerEvent::Finished(Box::new(manifest))
+        match active
+            .worker
+            .join()
+            .unwrap_or_else(|_| Err(eyre!("meeting recorder panicked")))
+        {
+            Ok(manifest) => publication::finished(manifest, events),
+            Err(error) => {
+                let _ = events.send(ControllerEvent::Failed {
+                    title: active.title,
+                    error: error.to_string(),
+                });
             }
-            Ok(Err(error)) => ControllerEvent::Failed {
-                title: active.title,
-                error: error.to_string(),
-            },
-            Err(_) => ControllerEvent::Failed {
-                title: active.title,
-                error: "meeting recorder panicked".into(),
-            },
-        };
-        let _ = events.send(event);
+        }
     }
 
     // Stopped and transcribing: detection waits, but whether the call app
@@ -1046,9 +1007,7 @@ fn poll_recording(
                 application,
                 "meeting recording stopped automatically after its call ended"
             );
-            if !active.stop.swap(true, Ordering::Relaxed) {
-                let _ = events.send(ControllerEvent::Transcribing);
-            }
+            active.end(detector, events);
         }
 
         // Stop when the call ends, in a browser that never releases
@@ -1066,8 +1025,10 @@ fn poll_recording(
             });
             if let Some(microphone) = microphone {
                 let context = browser.recording_context(microphone);
-                let current = candidate_from_microphone(microphone, &context)
-                    .and_then(|candidate| candidate.call);
+                let candidate = candidate_from_microphone(microphone, &context);
+                let current = candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.call.clone());
                 if active.call_switch.observe(current.as_deref()) {
                     tracing::info!(
                         application,
@@ -1075,6 +1036,16 @@ fn poll_recording(
                         to = current.as_deref().unwrap_or_default(),
                         "the page named a different call; the recording stops after its grace unless kept"
                     );
+                    // The browser stays on the microphone and its next reads
+                    // can still name the ended call (or none): remember the
+                    // call the page named, so detection starts that one.
+                    if let Some(candidate) = candidate.filter(|candidate| candidate.call.is_some())
+                    {
+                        detector.call_switched(
+                            active.call_switch.recorded().map(str::to_owned),
+                            candidate,
+                        );
+                    }
                     active.call_stop.arm();
                     let _ = events.send(ControllerEvent::CallEnded {
                         app: active.app_label.clone(),
@@ -1088,6 +1059,7 @@ fn poll_recording(
                     &active.call_switch,
                     &mut active.call_stop,
                     &active.auto_stop,
+                    detector,
                     events,
                 );
             }
@@ -1096,9 +1068,7 @@ fn poll_recording(
                     application,
                     "meeting recording stopped automatically after its page named another call"
                 );
-                if !active.stop.swap(true, Ordering::Relaxed) {
-                    let _ = events.send(ControllerEvent::Transcribing);
-                }
+                active.end(detector, events);
             }
         }
     }
@@ -1106,7 +1076,7 @@ fn poll_recording(
     // Stop when the call ends turned off while a page change was counting:
     // the deadline goes rather than stopping the recording when it comes back.
     let stop_on_end = crate::app_settings::meeting_stop_when_call_ends();
-    disarm_call_stop_unless_watching(recording, stop_on_end, events);
+    disarm_call_stop_unless_watching(recording, stop_on_end, detector, events);
     Ok(())
 }
 
@@ -1123,50 +1093,6 @@ fn withdraw_stop(
         let _ = events.send(ControllerEvent::CallEndedWithdrawn);
     }
     true
-}
-
-/// The page names the recorded call again (or one the user kept): whatever
-/// change was counting is over, so its stop never fires and its notice goes.
-fn withdraw_call_switch_stop(
-    switch: &CallSwitch,
-    stop: &mut AutoStop,
-    other: &AutoStop,
-    events: &SyncSender<ControllerEvent>,
-) {
-    if !switch.changed() && withdraw_stop(stop, other, events) {
-        tracing::info!("the page named the recorded call again; its pending stop is withdrawn");
-    }
-}
-
-/// Drops an armed call-switch stop when nothing watches the page: a deadline
-/// counted under a setting that is now off must not carry over.
-fn disarm_call_stop_unless_watching(
-    recording: &mut Option<ActiveRecording>,
-    lab_on: bool,
-    events: &SyncSender<ControllerEvent>,
-) {
-    if let Some(active) = recording.as_mut()
-        && !watching_call_switch(Some(active), lab_on)
-        && withdraw_stop(&mut active.call_stop, &active.auto_stop, events)
-    {
-        tracing::info!("the page is no longer watched; its pending stop is dropped");
-    }
-}
-
-/// Whether a recording watches its browser's page for another call (Stop
-/// when the call ends) instead of dropping the page while it records:
-/// only one Hex started on its own, for a call whose page named its code, in
-/// a browser, and that has not been told to stop yet. Every other recording
-/// keeps the browser watch reset.
-fn watching_call_switch(recording: Option<&ActiveRecording>, lab_on: bool) -> bool {
-    recording.is_some_and(|active| {
-        !active.stop.load(Ordering::Relaxed)
-            && active.call_switch.recorded().is_some()
-            && active.application.as_deref().is_some_and(|application| {
-                crate::microphone_activity::is_browser_id(Some(application))
-            })
-            && stops_when_call_ends(active.automatic, lab_on)
-    })
 }
 
 /// Whether a recording stops on its own once its call ends: only one Hex
@@ -1469,14 +1395,16 @@ fn detect_meeting(
 
 /// Writes notes on a background thread; the UI refreshes from the manifest
 /// whether generation succeeds or fails.
-fn start_notes(id: String, events: &SyncSender<ControllerEvent>) {
+pub(super) fn start_notes(id: String, events: &SyncSender<ControllerEvent>) {
     let finished = events.clone();
-    if meeting::spawn_summary(id, move |result| {
-        if let Ok(manifest) = result {
-            let _ = finished.send(ControllerEvent::NotesFinished(Box::new(manifest)));
-        }
+    let pending = id.clone();
+    if meeting::spawn_summary(id.clone(), move |result| {
+        let _ = finished.send(match result {
+            Ok(manifest) => ControllerEvent::NotesFinished(Box::new(manifest)),
+            Err(_) => ControllerEvent::NotesProgress(pending),
+        });
     }) {
-        let _ = events.send(ControllerEvent::NotesStarted);
+        let _ = events.send(ControllerEvent::NotesProgress(id));
     }
 }
 
@@ -1657,6 +1585,35 @@ mod tests {
     }
 
     #[test]
+    fn stop_request_is_not_a_capture_stopped_acknowledgment() {
+        let (events, read) = mpsc::sync_channel(4);
+        let mut active = active_recording(None, false, None);
+        let (updates, worker) = mpsc::sync_channel(1);
+        let (finish, wait) = mpsc::channel();
+        active.worker = thread::spawn(move || {
+            wait.recv().unwrap();
+            Err(eyre!("fixture"))
+        });
+        active.updates = worker;
+        let mut detector = MeetingDetector::default();
+        active.end(&mut detector, &events);
+        active.end(&mut detector, &events);
+        assert!(active.stop.load(Ordering::Relaxed));
+        assert!(matches!(read.try_recv(), Ok(ControllerEvent::Stopping)));
+        assert!(read.try_recv().is_err());
+        updates
+            .send(meeting::RecordingUpdate::Transcribing)
+            .unwrap();
+        let mut active = Some(active);
+        let mut browser = BrowserWatch::new(ContextSnapshot::capture_for_meeting);
+        poll_recording(&mut active, &mut detector, &mut browser, &events).unwrap();
+        assert!(matches!(read.try_recv(), Ok(ControllerEvent::Transcribing)));
+        assert!(read.try_recv().is_err());
+        finish.send(()).unwrap();
+        assert!(active.unwrap().worker.join().unwrap().is_err());
+    }
+
+    #[test]
     fn keep_recording_disarms_the_call_switch_stop_too() {
         let (events, _received) = mpsc::sync_channel(4);
         let mut active = active_recording(
@@ -1791,7 +1748,12 @@ mod tests {
         let mut active = active_recording(arc, true, Some("abc-defg-hij"));
         active.call_stop.arm();
         let mut recording = Some(active);
-        disarm_call_stop_unless_watching(&mut recording, false, &events);
+        disarm_call_stop_unless_watching(
+            &mut recording,
+            false,
+            &mut MeetingDetector::default(),
+            &events,
+        );
         let active = recording.as_mut().unwrap();
         assert!(!active.call_stop.disarm(), "the armed stop was kept");
         assert!(!active.stop.load(Ordering::Relaxed));
@@ -1806,11 +1768,82 @@ mod tests {
         let mut active = active_recording(arc, true, Some("abc-defg-hij"));
         active.call_stop.arm();
         let mut recording = Some(active);
-        disarm_call_stop_unless_watching(&mut recording, true, &events);
+        disarm_call_stop_unless_watching(
+            &mut recording,
+            true,
+            &mut MeetingDetector::default(),
+            &events,
+        );
         assert!(recording.as_mut().unwrap().call_stop.disarm());
         assert!(
             received.try_recv().is_err(),
             "a watched page keeps its stop"
+        );
+    }
+
+    #[test]
+    fn the_page_returning_during_the_grace_forgets_the_switched_call() {
+        use crate::meeting::detection::CALL_CHANGED_AFTER;
+        let (events, _received) = mpsc::sync_channel(4);
+        let mut detector = MeetingDetector::default();
+        detector.call_switched(Some("abc-defg-hij".into()), meet_candidate());
+        let mut active = active_recording(
+            Some("company.thebrowser.Browser"),
+            true,
+            Some("abc-defg-hij"),
+        );
+        // The page named the next call long enough to arm the stop, then came
+        // back to the recorded one before the grace ran out.
+        let base = Instant::now();
+        assert!(!active.call_switch.observe_at(Some("xyz-wxyz-xyz"), base));
+        assert!(
+            active
+                .call_switch
+                .observe_at(Some("xyz-wxyz-xyz"), base + CALL_CHANGED_AFTER)
+        );
+        active.call_stop.arm();
+        assert!(!active.call_switch.observe_at(
+            Some("abc-defg-hij"),
+            base + CALL_CHANGED_AFTER + Duration::from_secs(1)
+        ));
+        withdraw_call_switch_stop(
+            &active.call_switch,
+            &mut active.call_stop,
+            &active.auto_stop,
+            &mut detector,
+            &events,
+        );
+        assert!(!active.call_stop.disarm(), "the stop was left pending");
+        assert!(
+            detector.switched_call().is_none(),
+            "the withdrawn stop kept the call its page named"
+        );
+    }
+
+    #[test]
+    fn a_hand_stop_keeps_the_switched_call() {
+        let (events, _received) = mpsc::sync_channel(4);
+        let mut detector = MeetingDetector::default();
+        detector.call_switched(Some("abc-defg-hij".into()), meet_candidate());
+        let mut active = active_recording(
+            Some("company.thebrowser.Browser"),
+            true,
+            Some("abc-defg-hij"),
+        );
+        active.call_stop.arm();
+        // Stop pressed during the grace: the recording is already stopping,
+        // so its armed page stop goes without forgetting the call its page
+        // named, and the next recording starts that call.
+        active.stop.store(true, Ordering::Relaxed);
+        let mut recording = Some(active);
+        disarm_call_stop_unless_watching(&mut recording, false, &mut detector, &events);
+        assert!(
+            !recording.as_mut().unwrap().call_stop.disarm(),
+            "the armed stop was kept"
+        );
+        assert!(
+            detector.switched_call().is_some(),
+            "the hand stop forgot the call its page named"
         );
     }
 
@@ -1841,6 +1874,7 @@ mod tests {
             &active.call_switch,
             &mut active.call_stop,
             &active.auto_stop,
+            &mut MeetingDetector::default(),
             &events,
         );
         assert!(matches!(
@@ -1856,6 +1890,7 @@ mod tests {
             &active.call_switch,
             &mut active.call_stop,
             &active.auto_stop,
+            &mut MeetingDetector::default(),
             &events,
         );
         assert!(received.try_recv().is_err());
@@ -1871,6 +1906,7 @@ mod tests {
             &active.call_switch,
             &mut active.call_stop,
             &active.auto_stop,
+            &mut MeetingDetector::default(),
             &events,
         );
         assert!(active.call_stop.disarm(), "the stop was dropped mid-count");
@@ -1889,6 +1925,7 @@ mod tests {
             &active.call_switch,
             &mut active.call_stop,
             &active.auto_stop,
+            &mut MeetingDetector::default(),
             &events,
         );
         assert!(!active.call_stop.disarm(), "the page stop was not dropped");
@@ -1984,6 +2021,18 @@ mod tests {
             window_title: Some("Standup".into()),
             ..ContextSnapshot::default()
         }
+    }
+
+    /// A Google Meet call's page in the test browser, for the call-switch
+    /// checks.
+    fn meet_candidate() -> MeetingCandidate {
+        let tab = ContextSnapshot {
+            application: Some("Brave Browser".into()),
+            browser_url: Some(url::Url::parse("https://meet.google.com/xyz-wxyz-xyz").unwrap()),
+            window_title: Some("Meet - Standup".into()),
+            ..ContextSnapshot::default()
+        };
+        candidate_from_microphone(&brave(), &tab).unwrap()
     }
 
     fn brave() -> ActiveMicrophoneApplication {

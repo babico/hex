@@ -17,7 +17,7 @@ use crate::desktop::events::{
 };
 use crate::desktop::host::DesktopShortcuts;
 use crate::dictation::service::{DictationQueue, Effect, MICROPHONE_LOST, ServiceDictations};
-use crate::dictation::{DictationCapture, Finish, ReleaseWait};
+use crate::dictation::{DictationCapture, Finish, POST_RELEASE_TAIL, ReleaseWait};
 use crate::feedback::{self, Tone};
 use crate::linux::input::{
     CommandQueue, HotkeyEvent, HotkeyOptions, HotkeyStatus, LinuxHotkey, LinuxHotkeyMonitor,
@@ -58,10 +58,8 @@ struct Job {
     /// text is committed instead of pasted. Dropping an unfinished job
     /// cancels it.
     typing: Option<crate::linux::live_typing::Session>,
-    /// How long a shortcut-started capture's shortcut was held, press to
-    /// release; `None` for a `hex dictation` capture (Labs › YOLO
-    /// mode).
-    held_ms: Option<u64>,
+    /// A physical dictation shortcut, not a control or API request.
+    by_shortcut: bool,
     /// Labs › Stop phrase: the words its capture ended with, read when the
     /// phrase was heard and removed from the transcript before processing.
     stop_phrase: Option<String>,
@@ -177,7 +175,7 @@ fn readiness_message(
 
 /// Runs hotkey dictation until `shutdown`. A prepared transcriber skips the
 /// model load; otherwise the supplied transcription selection is loaded here,
-/// or parked until the first dictation with Labs › Unload model when idle.
+/// or parked until the first dictation with Labs › Free memory when idle.
 /// `updates` change settings, the model, and shortcut registration in place.
 /// `dictations` records a local API client's dictation beside the shortcut:
 /// one capture at a time, and neither ends the other.
@@ -195,7 +193,7 @@ pub(crate) fn run(
     updates: mpsc::Receiver<ListenerUpdate>,
 ) -> Result<()> {
     let mut settings = settings.clone();
-    // Labs › Unload model when idle: a launch with no model Settings prepared
+    // Labs › Free memory when idle: a launch with no model Settings prepared
     // for this listener starts parked, as after an idle unload, until the
     // first dictation. A prepared model starts loaded; the idle timer unloads
     // it.
@@ -349,7 +347,7 @@ pub(crate) fn run(
                         job.recording.take(),
                         job.typing.take(),
                         job.context.finish(),
-                        None,
+                        job.by_shortcut,
                     );
                 }
                 let paster = paster.as_mut().map_err(|error| eyre!("{error:#}"))?;
@@ -372,7 +370,7 @@ pub(crate) fn run(
                     job.recording.take(),
                     job.typing.take(),
                     job.context.finish(),
-                    job.held_ms,
+                    job.by_shortcut,
                 )
             })()
             .map_err(|error| format!("{error:#}"));
@@ -868,6 +866,10 @@ pub(crate) fn run(
                 }
                 HotkeyEvent::Finish if capture.is_recording() => {
                     let released_at = clock.at(Instant::now()).unwrap_or(CaptureInstant::ZERO);
+                    // The clip keeps its tail and drops anything captured
+                    // after it, so the live stream must hear no further; the
+                    // engine refuses a stream fed well past the clip.
+                    capture.limit_stream_to(released_at, POST_RELEASE_TAIL);
                     finishing = Some(Finishing {
                         flavour: recording_flavour,
                         by_shortcut: recording_by_shortcut,
@@ -1374,10 +1376,6 @@ fn submit_capture(
         }
         Finish::Transcribe(mut clip) => {
             let audio_ms = clip.duration_ms();
-            // Labs › YOLO mode judges only a shortcut's processed
-            // paste, on how long the shortcut was held.
-            let held_ms =
-                (by_shortcut && !flavour.raw() && print.is_none()).then(|| clip.held_ms());
             let stream = clip.take_stream();
             let samples = clip.into_transcription_samples();
             let language = engine
@@ -1394,7 +1392,7 @@ fn submit_capture(
                 print,
                 flavour,
                 typing: typing.map(|CaptureTyping { session, .. }| session),
-                held_ms,
+                by_shortcut,
                 stop_phrase,
             }));
             match jobs.try_send(job) {
@@ -1999,7 +1997,7 @@ mod tests {
             None,
             None,
             Default::default(),
-            None,
+            true,
         );
 
         assert!(result.is_err(), "the failed paste is still reported");

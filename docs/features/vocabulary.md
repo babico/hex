@@ -12,7 +12,7 @@ General › Vocabulary   // vocabulary.settings; after Language
 │   -> muted note on the row and under the sheet's description: "SenseVoice
 │   Small doesn't use these terms; rewriting and search still do"; Parakeet,
 │   Underdog Bark, Whisper, and Qwen3-ASR (QwenCleo too) show none
-├── Parakeet-based model with Labs › Vocabulary biasing off -> the sheet says
+├── Parakeet-based model with Labs › Vocabulary help off -> the sheet says
 │   transcription uses the terms only with it on
 ├── Selected model reads fewer terms than the list holds -> muted line under
 │   the sheet's description: "This model reads the first 38 of 52 terms"
@@ -38,7 +38,7 @@ General › Vocabulary   // vocabulary.settings; after Language
     (settings.json `vocabulary_boost`)  // vocabulary.boost
 
 Transcription (Parakeet: RNN-T and TDT, Underdog Bark and Nemotron 3.5 ASR too)  // vocabulary.transcription; transcription::gguf_session::with_vocabulary
-├── Only with Labs › Vocabulary biasing on (`labs.vocabulary_biasing`, off by
+├── Only with Labs › Vocabulary help on (`labs.vocabulary_biasing`, off by
 │   default; labs.md) -> off: no run takes the list; the sheet says so, and
 │   rewriting and search still use it
 ├── Every run and live stream reads the list and the boost at its start:
@@ -74,7 +74,7 @@ Transcription (Parakeet: RNN-T and TDT, Underdog Bark and Nemotron 3.5 ASR too) 
 │   ("Kip" -> Kit)
 └── SenseVoice, Cohere, GigaAM, Granite, Apple Speech -> no vocabulary in transcription
 
-Context prompt (Whisper incl. ivrit.ai and NB-Whisper, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
+Context prompt (Whisper incl. ivrit.ai, NB-Whisper and KB-Whisper, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
 ├── Always on (not Labs): replaced the per-model Recognition hints box (#129)
 ├── Every whole-clip run reads the list at its start: dictation, meetings,
 │   captures, the local API; live streams run without it
@@ -90,7 +90,7 @@ Context prompt (Whisper incl. ivrit.ai and NB-Whisper, Qwen3-ASR, QwenCleo)  // 
 │   both models return it on silence or noise (README.md#get-ready)
 └── "Sounds like" spellings are not sent; rewriting and search use them
 
-Screen vocabulary (Labs › Screen vocabulary, macOS)  // vocabulary.screen
+Words on screen (Labs › Words on screen, macOS)  // vocabulary.screen
 ├── Off by default; off, or for a model that ignores vocabulary, no
 │   Accessibility read happens for a dictation
 ├── On, as a capture becomes real: one background read of the focused
@@ -105,7 +105,7 @@ Screen vocabulary (Labs › Screen vocabulary, macOS)  // vocabulary.screen
 ├── Joins that dictation after the mode's terms and the shared list, inside
 │   the same 64-term/character budgets; a model with VocabularyUse::None gets
 │   nothing
-├── Parakeet reads them only with Labs › Vocabulary biasing on and a boost
+├── Parakeet reads them only with Labs › Vocabulary help on and a boost
 │   other than Off; Whisper and Qwen3-ASR read them as a prompt
 ├── A capture with terms for a model that reads them uses its whole-clip run
 │   rather than a live stream's text: a stream fixes its vocabulary when it
@@ -260,8 +260,11 @@ trip in control.rs; `vocabulary_lists_terms_with_their_spellings` in
 `a_reload_retires_the_old_rows` in
 [rune_ui/vocabulary.rs](../../src/rune_ui/vocabulary.rs);
 `the_vocabulary_row_opens_its_sheet`,
-`add_term_scrolls_the_new_row_into_view`, and
-`the_vocabulary_row_says_when_the_model_ignores_the_list` in [rune_ui/tests.rs](../../src/rune_ui/tests.rs);
+`add_term_scrolls_the_new_row_into_view`,
+`the_vocabulary_row_says_when_the_model_ignores_the_list`, and
+`an_outside_press_on_a_settle_frame_still_exits_the_vocabulary_sheet` (an
+outside press on the first frame after the window comes back still plays the
+sheet's exit) in [rune_ui/tests.rs](../../src/rune_ui/tests.rs);
 `only_parakeet_based_models_use_the_vocabulary` in
 [transcription/models.rs](../../src/transcription/models.rs); transcribe.cpp's
 `tests/parakeet_vocabulary_unit.cpp` (fork branch

@@ -83,7 +83,7 @@ hex
 │   └── link <feature>             macOS: print hex://labs/<feature>, the link that opens Hex's Labs page on that lab's group
 ├── check-for-updates              check for an update now
 ├── launch-at-login [on|off]       report or change Launch at Login (macOS: installed Hex.app only; Windows Run key; Linux XDG autostart)
-├── completions <shell>            Labs › Shell completions: print a completion script for hex
+├── completions <shell>            Labs › Tab completion for hex: print a completion script for hex
 └── logs [--process] [-n N] [-f]   tail live.ndjson (or process.log); no running Hex needed
 ```
 
@@ -111,7 +111,7 @@ falls back to pasting. `--print` with `toggle` or `cancel` is a usage error
 and `hex paste-last` reach the listener's own queue as its shortcut would;
 Linux's `hex typed-text` does too.
 
-`dictation start --print` (Labs › Print-only CLI dictation, off by default,
+`dictation start --print` (Labs › Dictation for a command, off by default,
 macOS) records a dictation that belongs to the command instead of the person's
 focused app: the command blocks and answers only when the recording ends,
 however it ends, with the transcript (`transcript`, exit 0) instead of pasting
@@ -161,6 +161,11 @@ same.
 with `busy` while anything records or a shortcut gesture is in progress. The
 menu bar's Paste Last Dictation does nothing in that case.
 
+On a Mac with [Labs › Paste Last picker](features/dictation.md#paste-last-picker-labs-macos)
+on, the same command immediately pastes the newest eligible dictation or
+Annotate capture. It does not open a picker or send the capture anywhere. Its
+reply acknowledges queue admission, not receipt by the focused app.
+
 `typed-text` (Linux) runs the same job as Labs › Transform typed text's
 shortcut, for desktops without the shortcuts portal. It needs a listening Hex
 and the lab on (`disabled` when it is off), and refuses while Terminal paste
@@ -199,7 +204,7 @@ stderr only when it is a terminal. Ctrl-C ends the command and its service,
 printing nothing, with exit 130. It never pastes, records History, runs mode
 processing, or logs the transcript.
 
-`completions <shell>` (Labs › Shell completions, off by default) prints a
+`completions <shell>` (Labs › Tab completion for hex, off by default) prints a
 completion script for `hex` to stdout and nothing else. The script is
 generated at runtime from the same clap definitions every command parses, so
 a new command or flag is in it without anyone writing the script out again;
@@ -283,7 +288,9 @@ same queue (`unsupported` outside macOS 27+, `feature-off` while
 `labs.annotate_replay` is off); `capture status`
 lists bundles still writing and the last outcome (`last`: `bundle`, `stage`
 of `done`, `failed`, or `cancelled`, and for a written bundle `words`, `gaps`,
-and `missing_transcript`, why it has no words). A start or replay while two captures
+`missing_transcript` (why it has no words), and `audio_stopped_at_ms` when Hex
+had to stop keeping its audio, a streamed capture past its 8 h disk guard or a
+failed audio write). A start or replay while two captures
 are still writing is refused with `busy`. Every action is idempotent.
 
 `<capture>` is a bundle name (`1792933491953.scrawl`, the extension
@@ -568,7 +575,7 @@ support this lab.
   more-dictation-shortcuts`) and shares no key with another active shortcut.
   `mode` is `hold_or_double_tap` (the default), `hold`, `tap`, or `double_tap`;
   `double_tap` needs a binding with a key and otherwise reads as
-  `hold_or_double_tap`, except that Labs › Double-tap on a lone modifier also
+  `hold_or_double_tap`, except that Labs › Double-tap Option, Command, or Globe also
   allows a binding without one. Turning the Lab off keeps the rows saved.
 - `json` settings (modes, extra dictation shortcuts, meeting providers,
   excluded calendars) take the JSON value the file stores.

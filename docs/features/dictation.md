@@ -107,7 +107,7 @@ recorder refuses them, and a saved shortcut on one goes back to its default
 when settings load or the toggle turns off. On, the window's recorder takes
 them too (#1187). Details and checks in [labs.md](labs.md).
 
-Linux and macOS with Labs › Section key alone on (`labs.section_key_alone`,
+Linux and macOS with Labs › § key alone on (`labs.section_key_alone`,
 off by default; issue 1050): the ISO section key, left of 1, may be a
 shortcut with no modifier. On Linux the window's recorder takes § pressed
 alone and shows §, and `hex settings set dictation_hotkey §` (or `section`)
@@ -282,7 +282,7 @@ two thumbs on two modifiers do not roll during typing, so the window is 80 ms
 (`BOTH_SIDES_WINDOW`). The recorder keeps a lone modifier's side (the Left ·
 Either · Right picker widens it, and shows only for one-modifier chords),
 keeps both sides of a modifier, and records every other modifier as either
-side, so ⌥⌘ works from either hand. On macOS, Labs › Sided modifier chords
+side, so ⌥⌘ works from either hand. On macOS, Labs › Left and right keys
 (`labs.sided_modifier_chords`, off by default, issue 710; see
 [labs.md](labs.md)) makes the recorder keep each modifier's side in a
 modifier-only chord instead, so Right ⌘ + Right ⌥ records as `R⌥ R⌘` and the
@@ -306,12 +306,31 @@ Windows modifier-only shortcut                           // dictate.windows-lone
   └── Hex's own injected keys (paste, mask) -> Skipped by the hook (HEX_INJECTED)
 ```
 
-On layouts where Right Alt is AltGr, Windows adds a Left Ctrl press, so Right
-Alt alone never matches there; bind Right Ctrl instead. Checks:
+On layouts where Right Alt is AltGr, Windows sends a synthesized Left Ctrl
+(scan code 0x21D, not 0x1D), and `GetAsyncKeyState` reports it as a real Ctrl.
+The listener's hook and the recorder's own both leave it out, so Right Alt
+alone fires there and recording it stores `right-option`; it still reaches the
+app, so AltGr keeps typing. A modifier-only binding an AltGr-layout recording
+made before this (`control+option`) still fires on AltGr, while a real Left
+Ctrl with Right Alt is a chord and matches only a binding that names Ctrl. On
+AltGr layouts, AltGr plus a typing key (a letter, a digit, or a punctuation
+key) types its character instead of pressing a Ctrl+Alt shortcut, so the key
+reaches the app (#1964): use Left Ctrl+Alt for those shortcuts. A key that
+types nothing keeps its chord, so AltGr+F9 still presses Ctrl+Alt+F9, and
+AltGr never presses an Alt+<key> chord. Any key joining the hold still
+discards it. Checks:
 `one_modifier_alone_is_a_shortcut_and_alt_or_windows_mask_their_release`,
+`altgr_left_ctrl_is_no_ctrl_for_a_right_alt_shortcut`,
+`an_altgr_recorded_control_option_still_fires`,
+`a_key_chord_on_altgr_is_not_alt_with_that_key`,
 `a_key_joining_a_held_modifier_ends_it_quietly_unless_it_records` in
-[windows/input.rs](../../src/windows/input.rs), cross-compiled only; the menu
-mask and AltGr behavior have not run on a Windows PC.
+[windows/input.rs](../../src/windows/input.rs),
+`left_control_bits_follow_the_hooks_and_heal_a_missed_release`,
+`a_typing_key_is_a_letter_a_digit_or_punctuation` in
+[windows/input/modifiers.rs](../../src/windows/input/modifiers.rs), and
+`altgr_records_right_alt_alone`, `altgr_with_a_key_records_the_ctrl_windows_added`
+in [windows/input/chord.rs](../../src/windows/input/chord.rs), cross-compiled
+only; the menu mask and AltGr behavior have not run on a Windows PC.
 
 **Fixed November 4, 2026 (issue 1254):** a Windows key chord holding Alt or
 Windows (Alt+0, say) swallows its key, so the app saw Alt pressed and released
@@ -337,6 +356,105 @@ Checks: the `both_options_*` tests and
 `windows/input.rs`, and
 `a_modifier_alone_says_linux_needs_a_key_and_suggests_one` in
 `rune_ui/tests.rs`. Constructed events only; no physical keyboard run on any OS.
+
+**Fixed November 16, 2026 (issue 1901):** an app that registers raw keyboard
+input and installs its own `WH_KEYBOARD_LL` hook when it starts (Tauri 2 apps
+do both) silenced Hex's hook once such a window came to the front: while it
+is in front, Windows stops calling low-level keyboard hooks at all, so the
+dictation shortcut did nothing over that app until a hook was installed again,
+whatever its position in the chain. The listener now watches the foreground
+window (`SetWinEventHook`, skipping Hex's own process) on its hook thread and,
+in that callback, installs a fresh keyboard hook first and drops the old one
+straight after, with no message pumped in between:
+
+```ts
+Windows keyboard hook re-arm                             // dictate.windows-rearm
+  ├── Another app comes to the front -> New WH_KEYBOARD_LL hook, then the old one dropped
+  │   -> A hook installed again re-arms every low-level hook, whatever its position
+  │   -> A chord held across the swap is neither duplicated nor lost
+  ├── ~1.5 s later -> One more swap, arming no timer, skipped while Hex is in front
+  │   -> Covers an app that shows its window first and installs its hook only then
+  ├── The new hook fails -> The old one stays; one warning, later failures quiet
+  ├── The foreground watcher fails -> The listener runs as before
+  └── An app that installs its hook while already in front, more than ~1.5 s
+      after it came to the front, used to wait for the next foreground change
+      -> The watchdog below re-arms once input keeps arriving unseen
+```
+
+Proof limit: a C# harness reimplementing the swap, with its own window and a
+message loop that dispatches, ran on a GitHub Windows runner with injected
+input. Hex's Rust listener, a real Tauri app and a physical keyboard were not
+exercised, and no automated check covers the re-arm.
+
+**Fixed November 19, 2026:** a Toggle-mode Alt+Windows chord started recording,
+then for 50 minutes every shortcut press and Escape did nothing and wrote
+nothing to `process.log`; one later press finally ended the capture. The likely
+cause is the keyboard hook stopping: Windows removes a low-level hook that
+exceeds `LowLevelHooksTimeout`, and an app with raw keyboard input in front can
+silence every keyboard hook. Nothing was logged, so that was not proved. The
+fix that ends a stuck Toggle capture is the watchdog's re-arm: once the hooks
+are back, the next press finishes it. The lost-release heal matters mainly for
+Hold mode, where the capture is still recording, and keeps the hook state
+consistent in Toggle. It covers only a keyless normal dictation chord; a
+keyless raw, Terminal-paste, or second-shortcut capture with a lost release
+still relies on the re-arm and its next press. The hook thread now keeps a
+repeating timer and checks both:
+
+```ts
+Windows hook watchdog                                  // dictate.windows-hook-watchdog
+  ├── Every 1 s on the hook thread, as a thread timer the message loop handles
+  │   ├── Session input within 1 s but neither hook stamped an event for 3 s,
+  │   │   and Hex is not in front
+  │   │   -> Install fresh WH_KEYBOARD_LL and WH_MOUSE_LL hooks; one info line
+  │   │      when a silent streak starts, one with its count when a longer
+  │   │      streak ends (both count successful re-arms; a failed re-arm logs
+  │   │      the one-time warning instead)
+  │   │   -> The wait doubles after each silent re-arm: 3, 6, 12, ... 60 s
+  │   │   -> Only a keyboard event resets the wait; a mouse move proves the
+  │   │      mouse hook runs, not the keyboard hook, so it cannot reset it
+  │   │   -> A lock screen, a UAC secure desktop, or an elevated window, where
+  │   │      no non-elevated hook sees input, just backs off instead of looping
+  │   ├── The keyboard hook has been quiet past Windows' auto-repeat delay plus
+  │   │   250 ms, and a keyless normal dictation chord is active with its
+  │   │   modifiers reading up (GetAsyncKeyState)
+  │   │   -> Release it as the missing event would: Toggle locks, Hold finishes;
+  │   │      the tick stamps the release, so Hold keeps up to ~1 s more audio
+  │   │   -> A held key that another hook hides from GetAsyncKeyState still
+  │   │      repeats into Hex's hook, so that recent keyboard event blocks this
+  │   └── Its info line is written by this tick after it drops the hook state
+  ├── Every keyboard and mouse hook event stamps the shared tick first, injected
+  │   included; the keyboard hook also stamps a keyboard-only tick
+  ├── Toggle only: "dictation cancelled by the cancel key", or "Escape ignored
+  │   while recording" with the reason; the hook records each as an atomic and
+  │   the next tick writes it
+  └── Limits: Hex in front is skipped; a mouse moved without pause can keep a
+      dead keyboard hook from being noticed until it stops, though it no longer
+      resets the wait
+```
+
+No hook callback writes a log line, and nothing logs while the hook state lock
+is held. The tick writes at most a few rare lines on the hook thread (streak
+start/end, a cancel, an ignored Escape, a heal), so a stalled log writer can
+delay pending hook calls there, but never blocks a callback.
+
+Checks: `silence_is_judged_from_the_session_and_the_hooks`,
+`a_silent_streak_backs_off_and_only_a_keyboard_event_resets_it`,
+`a_single_rearm_streak_ends_quietly`, `a_recent_keyboard_event_blocks_the_heal`,
+`the_repeat_delay_maps_and_clamps`, and
+`distances_survive_the_tick_count_wrapping` in
+[windows/input/watchdog.rs](../../src/windows/input/watchdog.rs),
+`a_lost_release_forgets_sides_now_up` in
+[windows/input/modifiers.rs](../../src/windows/input/modifiers.rs), and
+`a_keyless_chord_whose_release_never_arrived_resynchronizes` and
+`the_release_heal_leaves_other_captures_alone` in
+[windows/input.rs](../../src/windows/input.rs). Proof limit: the unit tests run
+natively on the Windows x64 and ARM64 CI runners; nothing has run on a real PC
+with a hook-killing app or a long stuck capture.
+
+Apps that grab the keyboard with their own low-level hook (VMs and remote
+desktop clients often do) may now get Hex's hook re-installed ahead of theirs
+after 3 s of silence. A fresh install has always done that at a foreground
+change; the watchdog only makes it happen without one.
 
 ### Shortcuts Under Secure Input (macOS)
 
@@ -516,7 +634,7 @@ the read), and up to 1,000 after it join that capture's context
 (`ContextSnapshot::caret_text`); empty parts are omitted. The read uses
 `AXFocusedUIElement` through the 0.25 s messaging timeout and never reads Hex
 or an `AXSecureTextField`, so a password field returns nothing. Output's
-typed-text path, the Voice prompt request, meetings, the local API, History,
+typed-text path, the Rewrite by voice request, meetings, the local API, History,
 logs, and events never see it, and the text is never saved. Off, no
 Accessibility read or thread starts, and the rewrite prompt is byte for byte
 what it was. A cancelled capture discards a late read. See [labs.md](labs.md)
@@ -529,9 +647,28 @@ A dictation's OpenCode rewrite or voice prompt with no chosen model walks Hex's
 ranked fast models: the list is cached per service, any one failing drops the
 cache (the next request reads OpenCode's catalog again), and when every ranked
 model fails OpenCode's own default model answers, so a list read while OpenCode
-was still loading no longer fails every request until a restart (#1123). Check:
-`stale_ranked_models_fall_back_to_the_default_model` in
-[dictation/processor.rs](../../src/dictation/processor.rs).
+was still loading no longer fails every request until a restart (#1123).
+Providers that run a model through a local agent harness, like Claude Agent,
+are never picked automatically because each request pays the harness's startup,
+and they stay explicitly selectable (#1954). While
+that list has a model, the mode's model row and the picker's unset entry say
+Automatic (the entry keeps the model's name); only with no ranked model listed
+do they say Default and Use OpenCode default, because then OpenCode's own
+default answers. `live.ndjson` and History's processing observation record the
+rewrite model as `provider/id` in a `model` field, omitted when no model was
+named (OpenCode's own default answered, Hex's automatic choice failed before any
+model answered, or the on-device Apple Intelligence cleanup ran). The "dictation
+post-processing" and "voice prompt" completed and failed log lines name it too:
+`provider/id` for the named model that answered, or on failure the one the
+request asked for; `opencode default` when no model was named and OpenCode's
+default answered; `automatic` when no model was named and none answered. Checks:
+`stale_ranked_models_fall_back_to_the_default_model`,
+`agent_harness_models_never_rank_and_fall_back_to_the_default_model`,
+`a_processing_observation_names_the_model_that_answered`,
+`a_processing_log_line_names_the_model_or_its_automatic_choice`, and
+`an_unset_model_on_a_ranked_catalog_is_automatic` in
+[dictation/processor.rs](../../src/dictation/processor.rs) and
+[desktop/opencode_catalog.rs](../../src/desktop/opencode_catalog.rs).
 
 ### Terminal Paste Shortcut (Labs, Windows and Linux)
 
@@ -599,7 +736,75 @@ options), `the_second_dictation_shortcut_needs_its_lab_and_its_own_keys`
 (cross-compiled only). Proof limits: no physical shortcut press on any OS, no
 real Wayland grant or X11 grab run, and no Windows hook run.
 
-### Paste Last After A Failed Paste (every OS)
+### Paste Last Picker (Labs, macOS)
+
+Labs › Paste Last picker (`labs.paste_last_picker`; macOS, Dev-audience and off
+by default) opts the existing rebindable Paste Last shortcut, menu row and
+`hex paste-last` into mixed output. No new binding or preference row. A stable
+build never lists, accepts, or runs it, and `DisableLabs` holds it off. With it
+off, Paste Last pastes the newest dictation exactly as before; Windows and
+Linux are unchanged. The gate, `crate::labs::paste_last_picker()`, is where the
+work starts: the picker and its gesture, History's unified list and the rows it
+reads, and the cancel path's word writer.
+
+```ts
+Tap, Paste Last menu, or hex paste-last → newest ready, noncancelled dictation or marked annotation
+Hold 300 ms on the Mac event tap → up to eight recent items, without taking focus
+├── Initially select what tap would paste; with only Cancelled rows select nothing
+├── Show all History → open the searchable archive, not a paste
+├── Click a row → recheck that item and paste it once into the original field
+├── Arrow keys → move selection; Enter or release the chord modifiers → choose
+└── Escape or changed focus → close without touching the clipboard
+```
+
+With it on, the Mac History puts dictations, annotations, screenshots and
+screen recordings in one list. All types is the default. Search works inside the
+selected type and beyond the eight picker rows. Capture files keep their
+editor, copy, reveal, drag and Trash actions. Clear dictation history affects
+the dictation owner only. A shared-library bundle can be visible without
+being eligible for global paste; that needs the Hex writer's ready receipt.
+
+```ts
+Physical cancel of an intentional shortcut dictation → stop at the key timestamp, no tail
+├── Already-spoken samples → installed local detector + local model → nonempty words only
+│   └── Retention permits it → Dictation · Cancelled (no recording or output)
+└── Off, no speech, missing detector/model, or Clear during inference → no saved result
+CLI cancel, discard, system cancel, quit → no recovery
+```
+
+[Isolated Mac proof](../../tests/fixtures/paste-picker/one-history.sh): synthesize a
+phrase to a file, send the hold and Escape decisions and device chunks through
+the audio owner, run Silero and Parakeet, then press the type menu and search
+in the real Rune window rendered offscreen. It uses neither a microphone nor
+a pasteboard. This is not a native event-tap or receiving-app replay.
+
+Rows are ordered by completion time for this picker; a paste does not
+promote its item. Secure Input and invocations without usable release or
+overlay support take the immediate path. If Hex can't identify the original
+external field, it refuses. Multiline text in a target requiring simulated
+typing is refused rather than sending a Return. Global paste does not invoke
+Annotate's explicit Paste, Send or Undo.
+
+The [mixed selection check](../../src/paste/recent.rs) opens a temporary
+History file and a shared capture folder. The first row and the tap select the
+same ready item; a newer incomplete folder does not hide it. An unmarked
+bundle is never taken as Hex output. Removing a selected bundle makes its ID
+unavailable, rather than silently pasting the next item. Failed insertion
+recovery in this projection has one RAM slot, cleared with History and never
+written to the file. The Mac output worker now uses this slot for unretained
+output when it has a History owner. With no History owner, the existing
+listener-local fallback still works. These checks don't drive a global key.
+
+The [ownership tests](../../src/paste/capture/tests.rs) run the capture
+transaction without WindowServer. The [private-board Rune test](../../src/rune_ui/paste_picker/proof.rs)
+requires a GUI login and an explicit `--ignored` run. A separate disposable
+macOS GUI run used virtual hardware input, the actual listener and a second
+[AppKit receiver](../../tests/fixtures/paste-picker/Receiver.m). It received
+the newest capture as PNG then summary, the clicked older dictation, and the
+original URL on ordinary ⌘V. Escape left the pasteboard change count alone.
+Changing fields or copying after the PNG stopped the summary. TextEdit's
+RTF conversion sheet can legitimately cause such a partial paste; no retry.
+This does not establish delivery in arbitrary apps or native Secure Input.
 
 A paste that fails (another app changed the clipboard while Hex saved it, or a
 format couldn't be read) still makes that dictation Paste Last's, unless its
@@ -629,6 +834,59 @@ Issue [#1437](https://github.com/anomalyco/hex/issues/1437).
 Paste last dictation's own shortcut has no runtime filter beside dictation's,
 so one saved on the dictation shortcut's chord is cleared (logged) when
 settings load or save.
+
+### Windows Paste Target
+
+A Windows dictation sends Ctrl+V to whichever window is in front. The desktop
+and the taskbars belong to Explorer and take no paste, so a chord sent there is
+lost with no error. Before sending it, the listener reads the foreground
+window, its class, its process, and the keyboard-focused child, and logs one
+line per paste (`Windows paste target`, with the process stem and class; never
+the words). The desktop and taskbar classes (`Progman`, `WorkerW`,
+`Shell_TrayWnd`, `Shell_SecondaryTrayWnd`) owned by `explorer` count as the
+shell; an Explorer window that is not one of them (`CabinetWClass`) pastes as
+usual, and a desktop rename box (`Edit`) still takes the paste.
+
+```ts
+Windows paste                                     // dictate.windows-paste-target
+├── Capture starts -> The window in front is remembered, with its process
+├── Target is an app -> Ctrl+V goes there
+├── Target is the shell
+│   ├── The remembered window is still its process's, alive, visible, not
+│   │   minimized, not Hex's, not the shell
+│   │   -> Bring it forward, poll GetForegroundWindow 10 ms up to 200 ms
+│   │      (Windows may refuse; the log's `returned` field says if it arrived)
+│   └── Still the shell -> No chord; the plain transcript stays on the
+│       clipboard with the usual history/cloud exclusion, the job reports
+│       "copied" (never "pasted"), and History and Paste Last still keep it
+└── Tray Paste Last -> The tracker skips the desktop and taskbars, so it never
+    brings one forward; the listener applies the same rule per paste
+```
+
+The fallback keeps the marking a default paste has: the transcript is left out
+of Windows clipboard history (Win+V) and cloud sync (#851) unless Labs › Keep
+dictation on clipboard or Copy dictation only is on, which writes it as an
+ordinary entry. It is the plain transcript, without the continuation's join.
+
+As a known gap, a copied dictation currently looks and sounds the same as a
+paste: the HUD plays the same done state, the done tone plays, and no notice
+appears. The visible difference is the `copied` phase in `live.ndjson`, the
+Activity line (`Dictation copied to the clipboard`), and the words left on the
+clipboard. Returning to the capture window is best effort: Windows can refuse
+`SetForegroundWindow`, and the paste line's `returned` field shows whether it
+arrived. The onboarding practice treats a copied dictation as a finished one,
+so its step completes even when its field couldn't receive the text.
+
+Checks: `the_desktop_and_taskbars_take_no_paste`,
+`no_foreground_window_takes_no_paste`,
+`a_desktop_rename_box_still_takes_a_paste`,
+`explorer_windows_that_are_not_the_shell_still_take_a_paste`, and
+`another_process_using_a_shell_class_is_not_the_shell` in
+[paste_target.rs](../../src/dictation/paste_target.rs), and
+`a_copied_dictation_completes_the_practice_like_a_paste` in
+[practice.rs](../../src/rune_ui/practice.rs). Proof limits: the classification
+and the practice mapping are unit-tested only; the foreground read, the return
+attempt, and the copy fallback have not run on a real Windows PC.
 
 ### Copy Recent Dictation (Labs, macOS)
 
@@ -667,21 +925,20 @@ Details and checks in [labs.md](labs.md).
 ### YOLO Mode (Labs, every OS)
 
 With Labs › YOLO mode on (`labs.yolo_mode`, off by
-default), a long shortcut dictation sends itself:
+default), even a one-word shortcut dictation sends itself:
 
 ```ts
-Dictation shortcut released (hold, lock, or Toggle)
-  -> Held = press to release, without pre-roll or release tail
-Paste job, as the output commits                     // dictate.yolo-mode
-├── Held >= the chosen time (1-10 s, default 2 s), and the frontmost app is one
-│   of Only in's apps (none chosen = every app) -> Paste as usual
+Shortcut dictation (hold, lock, or Toggle)            // dictate.yolo-mode
+├── Discarded tap, silence, cancellation, or no final text -> No paste or Return
+├── Only in matches the captured app (none chosen = every app) -> Paste final text
+│   ├── Insertion failed -> No Return
 │   -> Wait until 500 ms after submission and 100 ms after the paste (macOS)
 │   ├── No Escape since submission -> Press Return; History records Send
 │   └── Escape after the release (macOS) -> No Return; History records Dictation
-└── Shorter, or another app -> Paste as usual
+└── Another app -> Paste as usual, without Return
 Never: Dictate without processing, `hex dictation`, the local API,
-printing stops, Copy dictation only, Live typing, meetings, captures,
-Paste last dictation
+printing stops, Live typing, meetings, captures, Paste last dictation
+Copy dictation only on -> YOLO mode still pastes and sends in its apps
 ```
 
 Details and checks in [labs.md](labs.md).
@@ -768,6 +1025,9 @@ Ordinary hold                            // lock activation is mapped below
   │       (Spaceman's Option-1) -> Seen at HID -> Discard, no double-tap lock
   ├── Modifier-only hold + any key, at any time -> Discard  // dictate.held-chord
   │   (key reaches the app; locked and toggle captures keep recording)
+  │   ├── Hold through other keys, a key at or after 1 s ->
+  │   │   Nothing: the capture goes on, the key reaches the app,
+  │   │   and the release still finishes it                // dictate.held-chord-lab
   │   └── Return or keypad Enter past 300 ms -> Nothing: the capture goes on,
   │       Return reaches the app                          // dictate.held-return
   ├── Escape while held past 300 ms -> Cancel, cancel tone; the tap keeps
@@ -792,6 +1052,29 @@ with the key code, the milliseconds after the press, and for HID evidence the
 raw timestamp, how it was read, and its arrival delay. The `discarded` event in
 `live.ndjson` carries the same cause as `reason`: `key`, `hid-key`, `mouse`, or
 `extra-modifier`. Short taps have no `reason`.
+
+With Labs › Hold through other keys on (macOS and Windows), a
+modifier-only Hold press stops taking keys as a chord a second or more after
+it started: at or after `HOLD_THROUGH_KEYS_AFTER` (1 s, counted from the
+press)
+a key goes to the app in front and the capture keeps recording, and its
+release still finishes with the usual tail, even while that key is still
+down (`dictate.held-chord-lab`). Inside the first second nothing changes, and
+neither do Toggle, a hands-free lock, shortcuts with a key, meetings, or the
+local API. Off, every chord is discarded exactly as above. macOS reads the
+gate in `DictationHotkey` ([suppression/hotkey.rs](../../src/suppression/hotkey.rs))
+as each chord key arrives; its clicks are unchanged, since the 300 ms hold
+threshold already ignores them. Windows reads the same second in its keyboard
+hook from the press's tick count, and a key or mouse button joining a long
+hold neither marks the capture dirty nor cancels it
+([windows/input/hold_through.rs](../../src/windows/input/hold_through.rs)).
+Checks: `hold_through_keys_keeps_a_long_hold_through_a_joining_key` in
+[suppression/tests.rs](../../src/suppression/tests.rs);
+`a_long_hold_keeps_recording_through_a_joining_key_or_button` and
+`toggle_and_a_wrapping_tick_count_keep_the_second` in
+[windows/input/hold_through.rs](../../src/windows/input/hold_through.rs).
+Neither was observed on a real keyboard yet; the Windows tests need Windows
+and run in Check Windows.
 
 **Fixed October 22, 2026:** a global shortcut registered with Carbon (Spaceman's
 Option-1 to Option-0 workspace keys, for example) consumes its key before the
@@ -1146,9 +1429,9 @@ General > Shortcut mode (under Shortcut)               // dictate.shortcut-mode
   Tap                          -> Toggle, below
   Double-tap                   -> Double-tap only; needs a key binding, or a
                                   shortcut without a key (one or more
-                                  modifiers) with Labs › Double-tap on a lone
-                                  modifier (labs.double_tap_modifiers, macOS,
-                                  off by default)
+                                  modifiers) with Labs › Double-tap Option,
+                                  Command, or Globe (labs.double_tap_modifiers,
+                                  macOS, off by default)
 Tap
   Press -> Start (pre-roll as usual) -> Release keeps recording
   -> Fresh shortcut press -> Finish (with the release tail)
@@ -1207,7 +1490,7 @@ General > Shortcut mode                               // dictate.shortcut-explai
   ├── The current choice has a focus-coloured border
   ├── Double-tap with a shortcut that has no key -> Dimmed, takes no focus
   │   or press, says "Needs a shortcut with a key, like ⌥Space", unless
-  │   Labs › Double-tap on a lone modifier is on (macOS)
+  │   Labs › Double-tap Option, Command, or Globe is on (macOS)
   ├── Long chord -> The panel widens (up to the window) so each option's
   │   lanes keep at least 64 pt beside the keycaps
   ├── Pick an option (click, Space) -> Saves the choice
@@ -1258,7 +1541,7 @@ Shortcut mode = Hold or double-tap or Double-tap     // dictate.lock
 
 Shortcut mode = Double-tap                           // dictate.double-tap-only
   Requires a key binding AND locking enabled, or a shortcut without a key
-  with Labs › Double-tap on a lone modifier on (macOS)
+  with Labs › Double-tap Option, Command, or Globe on (macOS)
   Single press/hold -> No capture                     // disables hold, not a toggle
   Same two qualifying complete taps -> LOCKED         // same lock, not a third mode
 
@@ -1299,6 +1582,9 @@ Release or locked finishing press                     // dictate.release-tail
   -> Wait for audio through release + 200 ms (POST_RELEASE_TAIL)
      ├── Arrives -> Clip ends exactly at release + 200 ms
      └── Stream stalls/fails -> Finish within tail + 100 ms with what arrived
+  -> The live stream is capped there when the finish begins (limit_stream_to):
+     a tail that grows to 600 ms, or a wait for the stop tone to pass, is fed
+     to the stream as the finished clip's remainder, never as live audio
   -> Not short taps, voice controls, programmatic stop, or meetings
   -> Linux and Windows wait the same tail; Linux ends at the release it observes
      (an X11 key release, a portal Deactivated, or `hex dictation stop`)
@@ -1331,6 +1617,22 @@ Release when idle -> Press shortcut                   // dictate.cold-microphone
      └── Labs › Keep mic open after dictating -> Keep it open for the
          chosen window (30 s, 1/3/5/30 min), then close; a press inside it
          takes the warm path above with its pre-roll (labs.md)
+
+Person away, warm microphone                          // dictate.warm-away; macOS
+  -> Display asleep, session locked, or Mac going to sleep releases it like
+     Release when idle; back on wake or unlock
+  -> Launch reads the current display and lock state, so Hex starts released
+     when it launches asleep or locked
+  -> Ignores Labs › Keep mic open after dictating's window (up to 30 min): the
+     idle microphone closes at once
+  -> Back, or the setting switched off by hand -> a plain open; a press while
+     it opens becomes a pending capture
+  -> A press before the stream is back stays cold: wall-clock edge, no
+     pre-roll, tone once it opens, so it never anchors to a closed
+     timeline's zero instant
+  -> Checks: `a_press_stays_cold_until_the_warm_microphone_is_back`,
+     `a_warm_microphone_releases_while_away_and_keeps_a_press_during_its_reopen`,
+     `an_away_release_bypasses_the_labs_linger_window`
 ```
 
 Source: `DictationCapture` in [dictation.rs](../../src/dictation.rs); checks:
@@ -1362,7 +1664,18 @@ tail also keeps any key-up or click sound made at release; no filtering is appli
 The owner in [dictation/audio.rs](../../src/dictation/audio.rs) has
 `cold_capture_restart_rejects_late_open_results_and_closes_after_finish` and
 `pending_open_uses_physical_press_for_intentional_threshold`: controlled opening
-and ownership transitions, not physical device startup latency. Tail checks there
+and ownership transitions, not physical device startup latency. It also has
+`a_warm_microphone_releases_while_away_and_keeps_a_press_during_its_reopen`:
+with the setting off, macOS releases the warm microphone while the display
+sleeps, the session is locked, or the Mac sleeps
+([audio/system_idle.rs](../../src/audio/system_idle.rs), NSWorkspace, the
+distributed screen-lock notifications, and the display and lock state read at
+launch), and a press during the reopen is kept as a pending capture instead of
+being refused as a failed stream. The away release bypasses Labs › Keep mic
+open after dictating's window (`an_away_release_bypasses_the_labs_linger_window`),
+and switching the setting off by hand also opens with a plain request, so a
+press during that reopen becomes a pending capture too. The setting and
+`hex status` keep reporting the persisted value. Tail checks there
 drive the owner with a fake stream: `release_waits_for_its_tail_and_keeps_no_later_audio`,
 `a_press_inside_the_tail_starts_its_own_capture_after_the_old_one_finishes`,
 `a_stalled_or_failed_stream_bounds_the_tail_wait`, and
@@ -1401,8 +1714,17 @@ passed, so a release followed only by the tone waits until then and keeps
 200 ms. The release event stays exact. The macOS audio owner and the Linux
 and Windows loops (`ReleaseWait`) wait at most the base tail plus 100 ms, or
 700 ms once speech grows it; a lost microphone finishes with what arrived.
+
+**The tail's wait can outlast the base tail** (a 428 ms Classic stop sound
+plus 160 ms of speech after it), so every finish caps the live stream at the
+release plus `POST_RELEASE_TAIL` when it begins (`limit_stream_to`): audio
+captured during the wait is trimmed from the clip unless the tail grows to
+keep it, and either way `finish_stream` feeds the remainder of the finished
+clip. Audio that arrived before the finish began can still sit past the
+clip's trimmed end; `MAX_OVERFED_SAMPLES` (250 ms) tolerates that late
+release. Check: `a_long_release_tail_never_feeds_the_stream_past_the_clip`.
 Escape, short taps, voice controls, programmatic stops, and meetings still
-get no tail. Checks in dictation.rs:
+get no tail. Other checks in dictation.rs:
 `a_word_said_through_the_release_keeps_the_tail_open_until_it_ends`,
 `a_release_after_the_speech_keeps_the_base_tail_without_waiting_longer`,
 `speech_that_carries_on_stops_the_tail_at_its_cap`, and
@@ -1424,16 +1746,21 @@ Model advertises streaming, GPU device             // dictate.streaming
   Release -> Collect the release tail (200 ms, up to 600 ms while speech goes on)
     -> Finish with the complete clip
     -> Feed any unfed remainder
+    -> The finish caps the stream at release + 200 ms when it begins
+       // audio captured while the tail decides is trimmed unless the tail grows
     -> Unified English: feed 400 ms of silence, as the whole clip gets (every OS)
     -> Finalize -> Final text
        ├── Stream failed, produced no text, or was fed > 250 ms past the clip
        │   -> Transcribe the whole clip offline (source=fallback)
-       ├── ≥ 300 ms of speech the stream heard ends > 400 ms before its text's start
-       │   -> Transcribe the whole clip offline (source=fallback)   // lost opening
+       ├── ≥ 300 ms of speech it heard before the text, outside the pre-roll and
+       │   start tone   -> Transcribe the whole clip offline (source=fallback)
+       │                                                  // likely lost opening
        ├── ≥ 300 ms of speech the stream heard lies > 400 ms past its text's end
        │   -> Transcribe the whole clip offline (source=fallback)   // #1101
        ├── The raw decode carries two different <ll-RR> language tags
        │   -> Transcribe the whole clip offline (source=fallback)   // language switch
+       ├── Unified English: the text has no closing sentence mark
+       │   -> Transcribe the whole clip offline (source=fallback)   // #1933
        ├── No final text within 1.5 s -> Abort the stream -> Whole clip
        └── Model switched during the capture -> Stream closed -> Whole clip
   Short tap, chord discard -> Drop the stream
@@ -1468,7 +1795,7 @@ Model advertises streaming, GPU device             // dictate.streaming
   └── Owner already claimed the commit -> Wait up to 750 ms; never paste over it
   Picker -> "Streams" tag on catalog models whose artifact streams   // setup.model-card
   Picker -> The saved language's Recommended/Fastest/Most accurate cards first  // setup.model-routing
-  ├── el: Cohere; tr, ms, fil, fa, mk, ar, ja, fi, sv, da: Whisper turbo first
+  ├── el: Cohere; tr, ms, fil, fa, mk, ar, ja, fi, da: Whisper turbo first
   ├── auto, yue, ko: no SenseVoice; mt: Parakeet v3 only (Whisper fails Maltese)
   ├── en: Underdog Bark 3.0 Pro and Clean (Parakeet v3 fine-tunes; Clean
   │   drops filler words) follow without a badge
@@ -1485,6 +1812,11 @@ Model advertises streaming, GPU device             // dictate.streaming
   │   only, always with the `no` hint, 539 MB; 6.68% WER on FLEURS Norwegian
   │   test against Whisper turbo's 8.94%, Hex's run), then Whisper turbo for
   │   Vocabulary (#1150)
+  ├── sv: KB-Whisper Medium Recommended (National Library of Sweden, Swedish
+  │   only, always with the `sv` hint, 539 MB; 6.6% WER on FLEURS Swedish
+  │   test, the model card's figure for its default checkpoint and not Hex's
+  │   run), then Parakeet v3 as Fastest and Whisper turbo for Vocabulary
+  │   (#1991)
   ├── en, fr, de, es, pt, it, ja: Granite Speech 5.0 (IBM's TurboCTC, 506 MB,
   │   no hint, also offered under Auto) follows without a badge: on FLEURS
   │   test it trailed Parakeet Unified/v3 in every European language and tied
@@ -1493,6 +1825,10 @@ Model advertises streaming, GPU device             // dictate.streaming
   │   under Auto) follows without a badge; 1.86% WER on LibriSpeech test-clean
   │   from transcribe.cpp's published conversion benchmark, with its FLEURS
   │   figures in Details
+  ├── Fluid Speech Pro: FluidVoice's Parakeet v3 retrain (742 MB, no hint, also
+  │   offered under Auto) follows without a badge; its card publishes no
+  │   LibriSpeech figure, so it carries no single rate, and its FLEURS figures
+  │   are in Details
   └── Every other available model follows without a badge, selectable and
       deletable; never auto-switched or auto-downloaded (setup.language-select)
 ```
@@ -1691,28 +2027,66 @@ macOS or a microphone.
 
 **Guard, November 7, 2026 (opening and language):** the coverage check now
 also runs at the start. `PauseCap` takes the first token with letters or
-digits (`spoken_text_start_ms`, the minimum `t0_ms`) and counts the speech
+digits (`spoken_text_start_ms`, the minimum `t0_ms`) and sums the speech
 frames the stream heard that end more than 400 ms before it; at least 300 ms
 of such speech means the stream lost its opening, so the whole clip is
 transcribed offline (`source=fallback`, reason "the stream's text starts at …
-ms but … ms of speech precedes it"). A short click before the speech is
-shorter than that. Hesitation fillers, coughs, or clicks that together reach
-300 ms before the first word would trip it too, and that false-positive rate
-is unmeasured; a false positive costs only the whole clip's latency, since its
-text is the fallback's. This check cannot see an opening that was garbled
-rather than dropped: a garbled opening still yields word tokens at the speech
-onset. The stream's unfiltered raw decode also keeps Nemotron 3.5's `<ll-RR>`
-language tags, which the public text drops; two distinct tags in one stream
-mean it changed language mid-clip, and the whole clip decides too
-(`language_tags`). That catches a garbled opening only when the garbled part
-carries a different tag, and neither check catches a stream that stays in one
-wrong language for the whole clip. Checks:
+ms but … ms of speech precedes it, from … to … ms"). Speech inside the press
+window is not counted: the pre-roll through the press, plus the current set's
+start sound (`feedback::start_tone_length`) and the 60 ms margin after it
+(`STOP_TONE_MARGIN`, the 40 ms chord grace before the provisional tone sounds
+and a little latency besides), all of it Hex's own audio — a retracted
+double-tap tone and an earlier dictation's stop tone live in the pre-roll,
+and the start tone follows the press. The clip knows that offset
+(`Recording::head_ignored`, from `pre_press`) and the stream is opened with
+it. With sounds off, the tone's length is zero, so only the pre-roll through
+the press is excluded. With "Release microphone while idle" the start tone
+sounds once the capture is intentional or ready instead of at the press, so
+the window may not cover it there. A short lost opening inside the window,
+including speech in the pre-roll, now goes unseen. Hex's tones are a likely
+source of false positives on a real microphone (the first version of this
+check, which summed them, likely rejected streams that had lost nothing — see
+`hexs_own_sounds_at_the_captures_head_are_not_a_lost_opening`), but that is
+not measured on a device, and the false-positive rate of this check on real
+speech (fillers, coughs, clicks outside the press window) is still unmeasured.
+Because it counts every counted frame, a lost opening is caught however it is
+broken up, including one followed by a pause longer than the 400 ms slack
+(`a_lost_opening_after_a_long_pause_still_falls_back_to_the_whole_clip`).
+This check
+cannot see an opening that was garbled rather than dropped: a garbled opening
+still yields word tokens at the speech onset. The stream's unfiltered raw
+decode also keeps Nemotron 3.5's `<ll-RR>` language tags, which the public
+text drops; two distinct tags in one stream mean it changed language
+mid-clip, and the whole clip decides too (`language_tags`). That catches a
+garbled opening only when the garbled part carries a different tag, and
+neither check catches a stream that stays in one wrong language for the whole
+clip. Checks:
 `a_stream_that_lost_the_opening_phrase_falls_back_to_the_whole_clip`,
+`a_lost_opening_after_a_long_pause_still_falls_back_to_the_whole_clip`,
 `a_short_click_before_the_text_does_not_discard_the_stream`,
 `a_punctuation_token_does_not_start_the_streams_text`, and
 `a_stream_that_switched_language_falls_back_to_the_whole_clip` (synthetic
 tones and tags, a fake stream). Not measured on a real model, microphone, or
 device; the stream's own loss is not fixed upstream.
+
+**Mitigation, November 17, 2026 (issue 1933):** a Unified English stream often
+finalizes without the closing full stop or question mark its whole-clip run
+keeps, so the paste lost the sentence mark. The native chunked decode still
+drops it; Hex now refuses a stream whose text, past trailing spaces and
+closing quotes or brackets, ends in anything but `.`, `?`, `!`, or `…`, and
+transcribes that clip whole (`source=fallback`, reason "the stream ended
+without closing sentence punctuation"). That also refuses text with nothing
+left once those are stripped, so it costs one extra whole-clip run on clips
+whose right text has no closing mark at all: single words, fragments, or a
+sentence whose trailing punctuation a transformation removed. The added
+latency was not measured. Checks:
+`a_sentence_mark_ends_every_accepted_stream`,
+`closing_quotes_and_brackets_do_not_hide_the_mark`,
+`a_stream_that_must_close_a_sentence_without_a_mark_falls_back`,
+`a_missing_mark_is_accepted_when_the_model_does_not_require_one`,
+`text_with_nothing_before_the_closers_fails_the_mark_check`, and
+`only_unified_english_streams_require_a_closing_mark` (synthetic text). Not
+measured on a real model or microphone.
 
 ### Ongoing Jobs And Output
 
@@ -2018,6 +2392,27 @@ sequence and the identifier match, not insertion into a real session.
 **Windows paste (issue 477):** Windows puts the transcript on the clipboard,
 waits for Shift, Alt, and Win to come up, sends Ctrl+V, and restores the
 previous clipboard 500 ms later unless a newer paste or another app changed it.
+Back-to-back dictations join as they do on macOS: when no key, click, or
+foreground-window change happened between them, the next transcript is pasted
+as a continuation with a space and sentence-aware capitalization. Paste last
+dictation continues too. A real key or click (any of the five mouse buttons)
+ends the join, and so does input another program injects, while the
+shortcut's own chord and Hex's own synthetic keys do not; a window switch ends
+it as a context change does on macOS. The shortcut's own press never ends
+it, even when Labs › Share dictation shortcut lets that key reach the app,
+while a bare press of the same key without the shortcut's modifiers is
+ordinary typing and does end the join.
+Everything in between is the shared [`continuation`](../../src/continuation.rs)
+policy. Sources: `ends_continuation` in
+[windows/input/activity.rs](../../src/windows/input/activity.rs), wired into the
+keyboard and mouse hooks in [windows/input.rs](../../src/windows/input.rs), and
+`text_to_paste` in [windows/paste.rs](../../src/windows/paste.rs). Checks:
+`real_input_ends_a_paste_continuation_but_hexs_own_events_do_not`,
+`a_shared_shortcut_trigger_does_not_end_a_paste_continuation`,
+`a_bare_trigger_key_ends_a_paste_continuation_but_the_shortcut_does_not`,
+`back_to_back_dictations_join_until_input_breaks_the_session`, and
+`a_paste_joins_only_the_session_that_made_it`; no automated check pastes into a
+real Windows app.
 Labs › Terminal paste (`paste_with_shift`, off by default; on Linux it is a
 General › Advanced row) sends Ctrl+Shift+V instead, for apps that ignore
 a synthetic Ctrl+V (the herdr desktop app); a Labs › Terminal paste shortcut
@@ -2362,10 +2757,16 @@ the pump (`rune_hud::rehome`, `rune_hud::macos`):
   active Space. When a Space switch or a full-screen exit left it behind, Hex
   orders the panel out, clears the mask, sets the mask Rune intends (never the
   panel's read-back), and orders it back in. That reorders the panel but leaves
-  Rune's presence state and alpha alone. One stranding gets at most three
-  attempts, at least 150 ms apart, and the budget resets when the panel is seen
-  on the active Space or the HUD hides, so a repair that did not take cannot
-  loop.
+  Rune's presence state and alpha alone. The window server applies that
+  asynchronously, so an attempt counts only once a later tick confirms it:
+  seen on the active Space, it took; still elsewhere after its wait, it failed,
+  and that tick tries again. The waits double from 150 ms to at most 3 s
+  (150, 300, 600, 1200, 2400, 3000 ms), for at most eight attempts per
+  stranding, and the budget resets when the panel is seen on the active Space
+  or the HUD hides, so a repair that did not take cannot loop. The log line
+  comes from the confirming tick (on the active Space again after N attempts,
+  still on another Space with the next wait, or giving up), never from a read
+  right after the reorder.
 - Every change of the Dock icon's activation policy (the policy follows
   Settings; an open Settings window forces the icon on) marks the panel for one
   repair. A call that leaves the policy as it was, which is the usual case when
@@ -2690,6 +3091,14 @@ TextEdit process were stopped afterward.
   (CPU-forced) evidence only. Real microphones, room noise, Bluetooth inputs,
   and a physical shortcut on a Mac or a Linux GPU have not been observed with a
   live stream.
+- **M5-class Metal:** macOS `main` sets `GGML_METAL_TENSOR_DISABLE` before any
+  backend or thread starts, because ggml's Metal tensor-API kernels (which it
+  enables by itself on M5/M6/A19/A20 GPUs) give wrong results there, so every
+  GGUF model transcribed to empty or garbage text (#1965). This build has not
+  been run on an M5 Mac; the evidence is the reporter's
+  `GGML_METAL_TENSOR_DISABLE=1 hex transcribe` run. Ignored model tests and
+  `scripts/dictation-corpus.sh` run under the test harness's own `main`, so set
+  the variable yourself when running them on an M5.
 - **Paste consumption:** current paste policy waits a fixed interval rather than
   acknowledging target consumption. Internal ordering does not establish
   correctness for an arbitrarily slow target application.
