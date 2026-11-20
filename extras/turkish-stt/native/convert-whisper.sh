@@ -3,7 +3,7 @@
 # Python is used at conversion time only; the result runs in transcribe.cpp.
 set -eu
 if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
-  echo "usage: $0 MODEL_ID LOCAL_HF_CHECKPOINT OUTPUT_DIRECTORY [TURKISH_16KHZ_MONO_WAV]" >&2
+  echo "usage: $0 MODEL_ID LOCAL_HF_CHECKPOINT OUTPUT_DIRECTORY [TURKISH_16KHZ_MONO_WAV_OR_JSONL_MANIFEST]" >&2
   exit 2
 fi
 case "$1" in
@@ -16,9 +16,15 @@ case "$id" in
   turkspeak-itu) repo_id=RsGoksel/turkspeak-lv3-ITU_Mainframe ;;
 esac
 audio=""
+audio_mode="--wav"
 if [ "$#" -eq 4 ]; then
-  test -f "$4" || { echo "No WAV file: $4" >&2; exit 2; }
+  test -f "$4" || { echo "No audio or manifest file: $4" >&2; exit 2; }
   audio=$(CDPATH= cd -- "$(dirname -- "$4")" && pwd)/$(basename -- "$4")
+  case "$audio" in
+    *.wav|*.WAV) audio_mode="--wav" ;;
+    *.jsonl) audio_mode="--manifest" ;;
+    *) echo "Expected a 16 kHz WAV or JSONL evaluation manifest: $audio" >&2; exit 2 ;;
+  esac
 fi
 checkpoint=$(CDPATH= cd -- "$2" && pwd)
 mkdir -p "$3"
@@ -53,10 +59,10 @@ if [ -n "$audio" ]; then
     "$helpers/validate_whisper_conversion.py" \
     --model "$id" --checkpoint "$work/staged" \
     --gguf "$output/$id-Q8_0.gguf" --native-cli "$cli" \
-    --wav "$audio" --output "$output/$id-parity.json"
-  echo "GGUF parity validation succeeded on $audio"
+    "$audio_mode" "$audio" --output "$output/$id-parity.json"
+  echo "GGUF reference parity gate passed on $audio"
 else
-  echo "WARNING: GGUF is unvalidated. Rerun with a local Turkish WAV as the fourth argument before importing."
+  echo "WARNING: GGUF is unvalidated. Rerun with a Turkish WAV or a ground-truth JSONL manifest before importing."
 fi
 
 echo "To install for native inference ONLY after passing reference parity:"
