@@ -130,6 +130,29 @@ def validated_audio(path: Path) -> int:
         return count
 
 
+def weight_manifest(model: str, root: Path) -> list[dict]:
+    """Hash exactly the four native model files for auditable comparisons."""
+    folder = root / "sherpa-onnx-tdt" if (model == "ufakzeka-kulak"
+                                         and (root / "sherpa-onnx-tdt").is_dir()) else root
+    decoder = "decoder.int8.onnx" if model in ("mihu-v2", "ufakzeka-kulak") else "decoder.onnx"
+    names = ("encoder.int8.onnx", decoder, "joiner.int8.onnx", "tokens.txt")
+    records = []
+    for name in names:
+        file = folder / name
+        if not file.is_file():
+            raise FileNotFoundError(f"Native model file is missing: {file}")
+        digest = hashlib.sha256()
+        with file.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+                digest.update(chunk)
+        records.append({
+            "name": str(file.relative_to(root)),
+            "bytes": file.stat().st_size,
+            "sha256": digest.hexdigest(),
+        })
+    return records
+
+
 def summarize(rows: list[dict]) -> dict:
     if not rows:
         raise ValueError("Evaluation contains no clips")
@@ -165,6 +188,7 @@ def evaluate(args: argparse.Namespace) -> dict:
     weights = args.weights.resolve(strict=True)
     if not weights.is_dir():
         raise ValueError("Weights must be a local directory")
+    verified_weights = weight_manifest(args.model, weights)
     results = []
     with ResidentWorker(worker_path, args.model, weights) as worker:
         for wav, ground_truth in clips:
@@ -190,6 +214,7 @@ def evaluate(args: argparse.Namespace) -> dict:
     report = {
         "model": args.model, "runtime": "Sherpa-ONNX resident worker",
         "worker_sha256": hashlib.sha256(worker_path.read_bytes()).hexdigest(),
+        "weight_files": verified_weights,
         "manifest": str(args.manifest.resolve()), "clips": results,
         "aggregate": aggregate, "max_wer": args.max_wer,
         "max_cer": args.max_cer, "passed": passed,
