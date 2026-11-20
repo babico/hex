@@ -296,8 +296,36 @@ enum MeetingCommand {
     },
 }
 
+// Experimental Turkish adapters use an explicitly installed Python environment.
+// Embed the script and registry so packaged Hex does not need a source checkout.
+fn turkish_stt_cli() -> Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() != Some(std::ffi::OsStr::new("turkish-stt")) {
+        return Ok(());
+    }
+    let args: Vec<_> = args.collect();
+    if transcription::external::cli(&args)? { std::process::exit(0); }
+    let registry = include_str!("../extras/turkish-stt/models.json");
+    if args.len() == 1 && args[0] == "list" {
+        let registry: serde_json::Value = serde_json::from_str(registry)?;
+        println!("{}", serde_json::to_string_pretty(&registry["models"])?);
+        std::process::exit(0);
+    }
+    let python = std::env::var_os("HEX_STT_PYTHON").unwrap_or_else(|| {
+        if cfg!(windows) { "python".into() } else { "python3".into() }
+    });
+    let status = std::process::Command::new(python)
+        .arg("-c")
+        .arg(include_str!("../extras/turkish-stt/stt.py"))
+        .args(args)
+        .env("HEX_TURKISH_STT_REGISTRY", registry)
+        .status()?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
+    turkish_stt_cli()?;
     color_eyre::install()?;
     let cli = Cli::parse_from(mcp_alias_arguments(std::env::args_os().collect()));
     let executable_name = std::env::current_exe()
@@ -905,6 +933,7 @@ mod tests {
 
 #[cfg(target_os = "linux")]
 fn main() -> Result<()> {
+    turkish_stt_cli()?;
     #[cfg(target_arch = "x86_64")]
     transcription::cpu_floor::require();
     // Opening ALSA's default device loads libpipewire into this process, and
@@ -925,6 +954,7 @@ fn main() -> Result<()> {
     let dll_search = windows::restrict_dll_search();
     // Then, before anything prints, join the terminal that ran `hex`.
     windows::attach_parent_console();
+    turkish_stt_cli()?;
     if let Err(error) = dll_search {
         eprintln!("hex: SetDefaultDllDirectories failed: {error}");
     }

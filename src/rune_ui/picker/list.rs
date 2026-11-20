@@ -340,14 +340,16 @@ fn model_row(ui: &Ui, p: Paint, entry: &Entry, language: &str) -> El {
 /// used in place; the first press arms it.
 fn delete_button(ui: &Ui, p: Paint, entry: &Entry, free: bool) -> Option<El> {
     let def = entry.def;
-    let deletable =
-        entry.state == State::Downloaded && free && matches!(def.runtime, ModelRuntime::Gguf(_));
+    let deletable = entry.state == State::Downloaded && free
+        && matches!(def.runtime, ModelRuntime::Gguf(_) | ModelRuntime::External);
     if !deletable {
         return None;
     }
     let in_place = transcription_models::is_in_place(def);
     if ui.picker.deletion == Some(def.id) {
-        let label = if in_place {
+        let label = if matches!(def.runtime, ModelRuntime::External) {
+            tr("Remove this external model?").to_owned()
+        } else if in_place {
             tr("Forget it?").to_owned()
         } else {
             tr_fill("Delete {}?", &def.size_label())

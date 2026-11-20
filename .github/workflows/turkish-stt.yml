@@ -1,0 +1,501 @@
+name: Turkish STT fork checks and unsigned builds
+on:
+  push:
+    branches: [feature/turkish-stt]
+  workflow_dispatch:
+    inputs:
+      build_desktop:
+        type: boolean
+        default: true
+        description: Build unsigned desktop packages
+permissions:
+  contents: read
+concurrency:
+  group: turkish-stt-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  companion:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Test registry and adapter dispatch without model weights
+        run: python -m unittest discover -s extras/turkish-stt -p "test_*.py"
+      - name: Check offline Whisper conversion helper shell syntax
+        if: runner.os != 'Windows'
+        run: sh -n extras/turkish-stt/native/convert-whisper.sh
+  rust-regressions:
+    # The desktop release jobs compile Hex but do not run its Rust unit
+    # tests. Exercise the native IPC, registration and checksum recovery
+    # behavior on every change before considering this fork releasable.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      OPENSSL_NO_VENDOR: "1"
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          cache-on-failure: true
+      - name: Install Rust desktop test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config python3 libasound2-dev \
+            libssl-dev libgtk-3-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libfontconfig1-dev libfreetype-dev libxcursor-dev libxi-dev \
+            libxrandr-dev libopenblas-dev libvulkan-dev glslc libshaderc-dev
+      - name: Run native STT Rust regression tests
+        run: cargo test --locked --bin hex transcription::external -- --test-threads=1
+
+  desktop:
+    if: github.event_name == 'push' || inputs.build_desktop
+    needs: [companion, sherpa-native]
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      sha: ${{ github.sha }}
+      version: 0.0.0-dev-${{ github.run_number }}
+      channel: ""
+      test-build: true
+      artifact-prefix: turkish-stt
+      turkish-stt: true
+  macos:
+    if: github.event_name == 'push' || inputs.build_desktop
+    needs: [companion, sherpa-native]
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      HEX_VERSION: 0.0.0-dev-${{ github.run_number }}
+      HEX_BUILD_CHANNEL: ""
+      HEX_TEST_BUILD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Install Metal toolchain
+        run: xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-sherpa-macos-arm64
+          path: ${{ runner.temp }}/native-stt
+      - name: Build unsigned app and DMG
+        run: |
+          scripts/setup.sh
+          scripts/set-crate-version.sh "$PWD" "$HEX_VERSION"
+          bundle=$(HEX_TURKISH_STT_DIR="$RUNNER_TEMP/native-stt" HEX_RELEASE_UNSIGNED=1 scripts/build-app.sh)
+          mkdir -p "$RUNNER_TEMP/macos"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$bundle" "$RUNNER_TEMP/macos/Hex.app.zip"
+          hdiutil create -volname "Hex Turkish STT" -srcfolder "$bundle" -ov -format UDZO "$RUNNER_TEMP/macos/Hex.dmg"
+      - name: Verify DMG mount and bundled signing
+        run: |
+          hdiutil verify "$RUNNER_TEMP/macos/Hex.dmg"
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$RUNNER_TEMP/macos/Hex.dmg"
+          trap 'hdiutil detach "$mount" || true' EXIT
+          app="$mount/Hex.app"
+          test -d "$app"
+          test -x "$app/Contents/MacOS/turkish-stt/hex-sherpa-worker"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          "$app/Contents/MacOS/turkish-stt/hex-sherpa-worker" --help
+      - uses: ./.github/release/upload
+        with:
+          name: turkish-stt-macos-arm64
+          path: ${{ runner.temp }}/macos
+  sherpa-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: windows-latest
+            target: windows-x64
+          - os: windows-11-arm
+            target: windows-arm64
+          - os: macos-26
+            target: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # Build against the oldest supported Linux runtime (Debian 12, glibc
+      # 2.36 / libstdc++ 3.4.30), not the newer Ubuntu runner host.
+      - name: Build Linux native worker on Debian 12
+        if: startsWith(matrix.target, 'linux-')
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work -e TARGET debian:12 bash -euc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends ca-certificates python3 cmake g++ make >/dev/null
+            python3 extras/turkish-stt/native/build.py --target "$TARGET" --output /work/native-dist
+            /work/native-dist/hex-sherpa-worker --help
+          '
+          # Docker writes root-owned output; the artifact upload action needs
+          # to generate its checksum manifest inside this directory.
+          sudo chown -R "$(id -u):$(id -g)" native-dist
+      - name: Validate Debian 12 worker ABI
+        if: startsWith(matrix.target, 'linux-')
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -w /work debian:12 bash -euc '
+            /work/native-dist/hex-sherpa-worker --help
+            ldd /work/native-dist/hex-sherpa-worker
+          '
+      - name: Build Windows or macOS native worker
+        if: "!startsWith(matrix.target, 'linux-')"
+        run: python extras/turkish-stt/native/build.py --target ${{ matrix.target }} --output native-dist
+      - name: Native startup errors are machine-readable
+        shell: bash
+        run: |
+          binary=native-dist/hex-sherpa-worker
+          if [ "${{ runner.os }}" = "Windows" ]; then binary=native-dist/hex-sherpa-worker.exe; fi
+          python extras/turkish-stt/native/check_startup_error.py "$binary"
+      - uses: ./.github/release/upload
+        with:
+          name: turkish-stt-sherpa-${{ matrix.target }}
+          path: native-dist
+
+  native-inference:
+    needs: sherpa-native
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-26]
+        model: [seda-v2, seda-tiny, ufakzeka-kulak]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ runner.os == 'Linux' && (runner.arch == 'ARM64' && 'turkish-stt-sherpa-linux-arm64' || 'turkish-stt-sherpa-linux-x64') || runner.os == 'Windows' && (runner.arch == 'ARM64' && 'turkish-stt-sherpa-windows-arm64' || 'turkish-stt-sherpa-windows-x64') || 'turkish-stt-sherpa-macos-arm64' }}
+          path: native-dist
+      - name: Benchmark two real Turkish decodes in the same process
+        shell: bash
+        run: |
+          if [ -f native-dist/hex-sherpa-worker ]; then chmod +x native-dist/hex-sherpa-worker; fi
+          binary=native-dist/hex-sherpa-worker
+          if [ "${{ runner.os }}" = "Windows" ]; then binary=native-dist/hex-sherpa-worker.exe; fi
+          flags=()
+          if [ "${{ runner.os }}" = "Linux" ] && [ "${{ runner.arch }}" = "X64" ] && [ "${{ matrix.model }}" = "seda-tiny" ]; then
+            flags+=(--corpus-smoke)
+          fi
+          python extras/turkish-stt/native/benchmark.py --worker "$binary" --model ${{ matrix.model }} --output metrics/result.json "${flags[@]}"
+      - uses: ./.github/release/upload
+        if: success()
+        with:
+          name: turkish-stt-metrics-${{ runner.os }}-${{ runner.arch }}-${{ matrix.model }}
+          path: metrics
+
+  vendor-balbal:
+    # Vendor package/weights are used solely for local inference tests, never
+    # bundled into releases; users must review the Balbal Community License.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [balbal-v2, balbal-manas]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Validate pinned Balbal vendor model with real Turkish speech
+        env:
+          PYTHONUTF8: "1"
+          TOKENIZERS_PARALLELISM: "false"
+        run: |
+          uv run --no-project --python 3.12 --with 'balbal==0.6.3' \
+            python extras/turkish-stt/native/benchmark_balbal.py --model ${{ matrix.model }} --output metrics/result.json
+      - uses: ./.github/release/upload
+        if: success()
+        with:
+          name: turkish-stt-metrics-${{ matrix.model }}
+          path: metrics
+
+  whisper-gguf-smoke:
+    # Real conversion/quantization/inference of a small public model.
+    # This does not validate Turkish fine-tune parity.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Convert, quantize and infer a real Whisper checkpoint
+        shell: bash
+        run: bash extras/turkish-stt/native/test_whisper_gguf.sh
+      - uses: ./.github/release/upload
+        if: success()
+        with:
+          name: turkish-stt-whisper-gguf-conversion-smoke
+          path: metrics
+
+  whisper-tokenizer:
+    # An authentic checkpoint conversion prerequisite test: fetch only
+    # public tokenizer metadata, never 3+ GB of weights or remote code.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Generate and validate real Turkish Whisper tokenizer metadata
+        run: |
+          uv run --no-project --python 3.12 --with 'transformers==5.6.1' --with 'huggingface-hub>=0.30' \
+            python extras/turkish-stt/native/test_actual_whisper_tokenizer.py
+
+  vendor-duyu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Run pinned Duyu engine with local ONNX weights and a real Turkish clip
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          uv run --no-project --with numpy --with onnxruntime --with sentencepiece --with huggingface_hub python extras/turkish-stt/native/benchmark_duyu.py
+      - uses: ./.github/release/upload
+        if: success()
+        with:
+          name: turkish-stt-metrics-duyu-small
+          path: metrics
+
+  native-windows-e2e:
+    needs: [desktop, sherpa-native]
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: x64
+            arch: x86_64
+          - os: windows-11-arm
+            label: arm64
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-windows-${{ matrix.arch }}
+          path: desktop-dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-sherpa-windows-${{ matrix.label }}
+          path: native-dist
+      - name: Run HEX native install + transcribe on Windows
+        shell: pwsh
+        env:
+          HEX_STT_NATIVE_DIR: ${{ github.workspace }}/native-dist
+          HEX_TEST_ARCH: ${{ matrix.label }}
+          PYTHONUTF8: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = Get-ChildItem desktop-dist -Recurse -Filter "hex-*-windows-$env:HEX_TEST_ARCH.com" | Select-Object -First 1
+          if (-not $bin) { throw 'Cannot find hex.com console launcher' }
+          # The published console launcher is versioned for the artifact.
+          # Its bootstrap logic specifically looks for a sibling named hex.exe.
+          $exe = [System.IO.Path]::ChangeExtension($bin.FullName, '.exe')
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Cannot find matching hex.exe: $exe" }
+          $testBin = Join-Path $env:RUNNER_TEMP 'hex-ci-bin'
+          New-Item -ItemType Directory -Force -Path $testBin | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $testBin 'hex.exe')
+          Copy-Item -LiteralPath $bin.FullName -Destination (Join-Path $testBin 'hex.com')
+          $bin = Get-Item -LiteralPath (Join-Path $testBin 'hex.com')
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'hex-turkish-stt-local'
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'hex-turkish-stt-roaming'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA, $env:APPDATA | Out-Null
+          @'
+          import hashlib,os,urllib.request
+          from pathlib import Path
+          url="https://raw.githubusercontent.com/atasoglu/seda/67fdbfc5e98919dbaecb8c7b63622b6d453c1c93/tests/data/speech.wav"
+          with urllib.request.urlopen(url,timeout=120) as r: audio=r.read(2_000_000)
+          assert hashlib.sha1(f"blob {len(audio)}\0".encode()+audio).hexdigest()=="47ae56f2500f69d6d0e56d6e1b0f87c6967246fe"
+          Path(os.environ["RUNNER_TEMP"],"speech.wav").write_bytes(audio)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify Turkish fixture' }
+          & $bin.FullName model install seda-tiny --language tr
+          if ($LASTEXITCODE -ne 0) { throw 'HEX native model install failed' }
+          & $bin.FullName model check seda-tiny --language tr
+          if ($LASTEXITCODE -ne 0) { throw 'HEX native model prewarm failed' }
+          $transcript = & $bin.FullName model transcribe "$env:RUNNER_TEMP/speech.wav" --model seda-tiny --language tr
+          if ($LASTEXITCODE -ne 0) { throw 'HEX model transcribe failed' }
+          Write-Host $transcript
+          if (($transcript.Trim().ToLowerInvariant().TrimEnd('.')) -ne 'bazı festivaller küçük çocuklu aileler için özel kamp alanlarına sahiptir') { throw 'Incorrect Turkish transcript' }
+
+
+  native-macos-e2e:
+    needs: [macos, sherpa-native]
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-macos-arm64
+          path: macos-dist
+      - name: Verify signed app from distributable and transcribe a real Turkish WAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hex-installed"
+          /usr/bin/ditto -x -k macos-dist/Hex.app.zip "$RUNNER_TEMP/hex-installed"
+          app="$RUNNER_TEMP/hex-installed/Hex.app"
+          test -x "$app/Contents/MacOS/hex"
+          test -x "$app/Contents/MacOS/turkish-stt/hex-sherpa-worker"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          "$app/Contents/MacOS/turkish-stt/hex-sherpa-worker" --help
+          export HOME="$RUNNER_TEMP/hex-user"
+          mkdir -p "$HOME"
+          python3 - <<'PY'
+          import hashlib, os, urllib.request
+          from pathlib import Path
+          url="https://raw.githubusercontent.com/atasoglu/seda/67fdbfc5e98919dbaecb8c7b63622b6d453c1c93/tests/data/speech.wav"
+          with urllib.request.urlopen(url, timeout=120) as response: audio=response.read(2_000_000)
+          assert hashlib.sha1(f"blob {len(audio)}\0".encode()+audio).hexdigest()=="47ae56f2500f69d6d0e56d6e1b0f87c6967246fe"
+          Path(os.environ["RUNNER_TEMP"],"speech.wav").write_bytes(audio)
+          PY
+          "$app/Contents/MacOS/hex" model install seda-tiny --language tr
+          "$app/Contents/MacOS/hex" model check seda-tiny --language tr
+          "$app/Contents/MacOS/hex" model transcribe "$RUNNER_TEMP/speech.wav" --model seda-tiny --language tr >"$RUNNER_TEMP/transcript.txt"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          text=Path(os.environ["RUNNER_TEMP"],"transcript.txt").read_text(encoding="utf-8").strip().casefold().rstrip(".")
+          expected="bazı festivaller küçük çocuklu aileler için özel kamp alanlarına sahiptir"
+          assert text==expected, f"macOS packaged Hex transcript mismatch: {text!r}"
+          PY
+
+  native-hex-e2e:
+    needs: [desktop, sherpa-native]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+            label: x64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            label: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-linux-${{ matrix.arch }}
+          path: desktop-dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-sherpa-linux-${{ matrix.label }}
+          path: native-dist
+      - name: Run HEX model install, load, transcribe and verify
+        shell: bash
+        env:
+          HEX_STT_NATIVE_DIR: ${{ github.workspace }}/native-dist
+          XDG_DATA_HOME: ${{ runner.temp }}/hex-test-data
+          XDG_CONFIG_HOME: ${{ runner.temp }}/hex-test-config
+        run: |
+          set -euo pipefail
+          executable=$(find desktop-dist -type f -name "hex-*-linux-${{ matrix.label }}" -print -quit)
+          test -n "$executable"
+          chmod +x "$executable" native-dist/hex-sherpa-worker
+          mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME"
+          python3 - <<'PY'
+          import hashlib, os, urllib.request
+          from pathlib import Path
+          source="https://raw.githubusercontent.com/atasoglu/seda/67fdbfc5e98919dbaecb8c7b63622b6d453c1c93/tests/data/speech.wav"
+          with urllib.request.urlopen(source,timeout=120) as request:
+              data=request.read(2_000_000)
+          assert hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest() == "47ae56f2500f69d6d0e56d6e1b0f87c6967246fe"
+          Path(os.environ["RUNNER_TEMP"],"speech.wav").write_bytes(data)
+          PY
+          "$executable" turkish-stt list >/dev/null
+          "$executable" model install seda-tiny --language tr
+          "$executable" model status seda-tiny --language tr
+          "$executable" model check seda-tiny --language tr
+          "$executable" model transcribe "$RUNNER_TEMP/speech.wav" --model seda-tiny --language tr | tee "$RUNNER_TEMP/result.txt"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          actual=Path(os.environ["RUNNER_TEMP"],"result.txt").read_text(encoding="utf-8").strip().casefold()
+          expected="bazı festivaller küçük çocuklu aileler için özel kamp alanlarına sahiptir"
+          assert actual.rstrip(".") == expected, f"HEX transcription mismatch: {actual!r}"
+          PY
+      - name: Record command-level completion
+        if: success()
+        run: echo 'HEX model install + model check + real microphone-style WAV transcription passed' >> "$GITHUB_STEP_SUMMARY"
+
+  portable:
+    needs: [desktop, sherpa-native]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            desktop: linux-x86_64
+          - target: linux-arm64
+            desktop: linux-aarch64
+          - target: windows-x64
+            desktop: windows-x86_64
+          - target: windows-arm64
+            desktop: windows-aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-${{ matrix.desktop }}
+          path: desktop-dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: turkish-stt-sherpa-${{ matrix.target }}
+          path: native-dist
+      - name: Combine executable and native runtime
+        run: python extras/turkish-stt/native/bundle.py --target ${{ matrix.target }} --desktop desktop-dist --native native-dist --output bundles
+      - uses: ./.github/release/upload
+        with:
+          name: turkish-stt-portable-${{ matrix.target }}
+          path: bundles

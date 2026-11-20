@@ -65,6 +65,19 @@ The [vocabulary](vocabulary.md) biases transcription toward names you list.
 [Your own speech models](own-models.md) covers adding a GGUF file and using
 models another app already downloaded; its Labs › Smaller model files toggle
 (off by default, macOS) also accepts imports quantized to Q6_K, Q5_K, or Q4_K.
+The [Turkish STT fork](../../extras/turkish-stt/README.md) introduces nine
+experimental model entries: four managed Sherpa-ONNX runtimes and five
+explicitly registered vendor/Python alternatives. Model preparation verifies
+the on-device artifacts and, for managed/Python backends, proves worker
+startup before saving a new Linux or Windows selection. Startup failures and
+cancellations do not activate an unverified model. Managed removal is safe
+after an app upgrade and refuses
+symlinked model data. Cross-platform build and inference checks are in
+`.github/workflows/turkish-stt.yml`; an opt-in JSONL corpus evaluator now
+records native model file hashes and actual micro-WER/CER, while the local
+Whisper GGUF parity gate can score multiple ground-truth clips. These tools
+do not establish production accuracy without a reviewed corpus and passing
+results. Physical microphone permissions and release signing remain unverified.
 [Annotate](capture.md) (macOS, Linux,
 and Windows) records the screen while you draw and talk and sends it to an agent.
 [Screenshots](labs.md) (Labs, macOS) takes CleanShot-style ⌘⇧4 area and

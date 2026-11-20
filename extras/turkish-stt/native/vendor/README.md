@@ -1,0 +1,1 @@
+Unmodified public C header and Apache-2.0 license from k2-fsa/sherpa-onnx v1.13.8. Header git blob: 5fe0813c603dac768bce00fadd2e15b0a23b7b73. Keep this version aligned with the SDK archive version in build.py.

@@ -624,6 +624,7 @@ pub(super) fn preparation(ui: &Ui, model: &ModelDefinition) -> Option<(String, O
                 .map_or(0, |(_, since)| since.elapsed().as_secs());
             (tr_fill("Loading model · {}s", &elapsed.to_string()), None)
         }
+        _ if matches!(model.runtime, ModelRuntime::External) => (tr("Downloading model").into(), None),
         _ => {
             let fraction = model.download_bytes().map_or(0.0, |bytes| {
                 (transcription.downloaded_bytes as f32 / bytes as f32).clamp(0.0, 1.0)

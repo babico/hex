@@ -28,6 +28,10 @@ on:
       test-build:
         type: boolean
         default: false
+      turkish-stt:
+        type: boolean
+        default: false
+        description: Include the prebuilt local Sherpa worker
       artifact-prefix:
         type: string
         default: build
@@ -89,8 +93,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C "$RUNNER_TEMP/bin" nfpm
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.turkish-stt
+        with:
+          name: turkish-stt-sherpa-linux-${{ env.HEX_LINUX_LABEL }}
+          path: ${{ runner.temp }}/native-stt
       - name: Build
         env:
+          HEX_TURKISH_STT_DIR: ${{ inputs.turkish-stt && format('{0}/native-stt', runner.temp) || '' }}
           HEX_RELEASE_DIST: ${{ runner.temp }}/dist
           CARGO_BUILD_JOBS: 4
           OPENSSL_NO_VENDOR: 1
@@ -112,6 +122,7 @@ jobs:
           sudo apt-get install -y "$base.deb"
           test "$(/usr/bin/hex --version | awk 'NF { value=$NF } END { print value }')" = "$HEX_VERSION"
           dpkg-query -S /usr/bin/hex /usr/lib/systemd/user/hex.service /usr/share/applications/anomaly.hex.desktop /usr/share/icons/hicolor/256x256/apps/anomaly.hex.png
+          if [ "${{ inputs.turkish-stt }}" = "true" ]; then /usr/lib/hex/turkish-stt/hex-sherpa-worker --help; fi
           sudo apt-get remove -y hex
           docker run --rm -v "$RUNNER_TEMP/dist:/dist:ro" -e HEX_VERSION -e HEX_LINUX_LABEL fedora:42 sh -euc '
             dnf install -y -q "/dist/hex-$HEX_VERSION-linux-$HEX_LINUX_LABEL.rpm"
@@ -122,6 +133,7 @@ jobs:
           docker run --rm -v "$RUNNER_TEMP/dist:/dist:ro" -e HEX_VERSION -e HEX_LINUX_LABEL debian:12 sh -euc '
             apt-get update -qq
             apt-get install -y -qq "/dist/hex-$HEX_VERSION-linux-$HEX_LINUX_LABEL.deb" > /dev/null
+            if [ -e /usr/lib/hex/turkish-stt/hex-sherpa-worker ]; then /usr/lib/hex/turkish-stt/hex-sherpa-worker --help; fi
             for hex in /usr/bin/hex "/dist/hex-$HEX_VERSION-linux-$HEX_LINUX_LABEL"; do
               test "$("$hex" --version | awk "NF { value=\$NF } END { print value }")" = "$HEX_VERSION"
               "$hex" history > /dev/null
@@ -275,6 +287,17 @@ jobs:
           if ($consoleImports | Select-String -Pattern 'VCRUNTIME|MSVCP|vcomp') { throw "hex.com imports Visual C++ runtime DLLs" }
           $consoleHeaders = & $dumpbin.FullName /headers $console
           if (-not ($consoleHeaders | Select-String -SimpleMatch 'subsystem (Windows CUI)')) { throw "hex.com is not a console program" }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.turkish-stt
+        with:
+          name: turkish-stt-sherpa-windows-${{ env.HEX_WINDOWS_LABEL }}
+          path: ${{ runner.temp }}/native-stt
+      - name: Build unsigned Turkish STT installer
+        if: inputs.turkish-stt
+        shell: pwsh
+        run: |
+          $base = "$env:RUNNER_TEMP/dist/hex-$env:HEX_VERSION-windows-$env:HEX_WINDOWS_LABEL"
+          & source/scripts/build-windows-installer.ps1 -Executable "$base.exe" -Console "$base.com" -Version $env:HEX_VERSION -Arch $env:HEX_WINDOWS_ARCH -OutDir "$env:RUNNER_TEMP/dist" -TurkishSttDir "$env:RUNNER_TEMP/native-stt"
       - id: upload
         uses: ./source/.github/release/upload
         with:

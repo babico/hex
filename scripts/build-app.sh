@@ -110,6 +110,32 @@ sign "$bundle/Contents/Library/HexMicrophone.driver"
 # entitlement; anything it touches is attributed to Hex, its responsible
 # process.
 sign --identifier "$bundle_id.scrawl-helper" "$bundle/Contents/MacOS/scrawl-helper"
+if [ -n "${HEX_TURKISH_STT_DIR:-}" ]; then
+  native="$bundle/Contents/MacOS/turkish-stt"
+  mkdir -p "$native"
+  cp -R "$HEX_TURKISH_STT_DIR/." "$native/"
+  chmod +x "$native/hex-sherpa-worker"
+  # Keep legal notices in resources, not in Contents/MacOS (a code directory).
+  if [ -d "$native/sdk-notices" ]; then
+    mv "$native/sdk-notices" "$bundle/Contents/Resources/turkish-stt-notices"
+  fi
+  # The artifact uploader adds SHA256SUMS to the download. It is build
+  # metadata, not executable code; placing it under Contents/MacOS makes
+  # Apple's nested-code signature validation reject the entire .app.
+  if [ -f "$native/SHA256SUMS" ]; then
+    mv "$native/SHA256SUMS" "$bundle/Contents/Resources/turkish-stt-SHA256SUMS"
+  fi
+  # Third-party SDK archives contain both unsuffixed .dylib symlinks and
+  # versioned Mach-O files. Signing "*.dylib" misses the real binaries.
+  # Sign every regular Mach-O file, then the containing app, inside-out.
+  find "$native" -type f | while IFS= read -r candidate; do
+    if /usr/bin/file -b "$candidate" | grep -q 'Mach-O'; then
+      sign "$candidate"
+      codesign --verify --strict --verbose=2 "$candidate"
+    fi
+  done
+  "$native/hex-sherpa-worker" --help >&2
+fi
 sign --entitlements "$root/.github/release/hex.entitlements" "$bundle"
 codesign --verify --deep --strict --verbose=2 "$bundle"
 echo "$bundle"

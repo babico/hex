@@ -12,6 +12,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::external::{self, ExternalModelId};
 use super::artifacts::{
     COHERE_ARTIFACT, COHERE_LANGUAGES, GIGAAM_V3_E2E_RNNT_ARTIFACT, GRANITE_SPEECH_5_ARTIFACT,
     GRANITE_SPEECH_5_LANGUAGES, IVRIT_WHISPER_ARTIFACT, NB_WHISPER_MEDIUM_ARTIFACT,
@@ -51,6 +52,7 @@ pub enum TranscriptionModelId {
     NbWhisperMedium,
     GraniteSpeech5,
     AppleSpeech,
+    External(ExternalModelId),
     Custom(CustomModelId),
 }
 
@@ -88,6 +90,7 @@ impl TranscriptionModelId {
             Self::NbWhisperMedium => "nb_whisper_medium",
             Self::GraniteSpeech5 => "granite_speech_5",
             Self::AppleSpeech => "apple_speech",
+            Self::External(id) => id.as_str(),
             Self::Custom(id) => id.as_str(),
         }
     }
@@ -127,6 +130,7 @@ impl FromStr for TranscriptionModelId {
             "nb_whisper_medium" => Ok(Self::NbWhisperMedium),
             "granite_speech_5" => Ok(Self::GraniteSpeech5),
             "apple_speech" => Ok(Self::AppleSpeech),
+            _ if ExternalModelId::parse(value).is_some() => Ok(Self::External(ExternalModelId::parse(value).expect("matched external id"))),
             _ => CustomModelId::parse(value)
                 .map(Self::Custom)
                 .ok_or_else(|| eyre!("unknown transcription model: {value}")),
@@ -225,6 +229,7 @@ pub enum VocabularyUse {
 #[derive(Clone, Copy)]
 pub enum ModelRuntime {
     Gguf(&'static GgufArtifact),
+    External,
     AppleSpeech,
 }
 
@@ -258,6 +263,7 @@ impl ModelDefinition {
     pub(crate) fn available_where(&self, k_quants: bool) -> bool {
         match (self.runtime, self.id) {
             (ModelRuntime::AppleSpeech, _) => false,
+            (ModelRuntime::External, _) => true,
             (ModelRuntime::Gguf(_), TranscriptionModelId::Custom(id)) => {
                 super::custom_models::usable(id)
                     && (!super::custom_models::uses_k_quants(id) || k_quants)
@@ -342,6 +348,7 @@ impl ModelDefinition {
     pub fn size_label(&self) -> String {
         match self.runtime {
             ModelRuntime::AppleSpeech => "Managed".into(),
+            ModelRuntime::External => "External runtime".into(),
             ModelRuntime::Gguf(artifact) if artifact.bytes >= 1_000_000_000 => {
                 format!("{:.1} GB", artifact.bytes as f64 / 1_000_000_000.0)
             }
@@ -387,7 +394,7 @@ impl ModelDefinition {
     pub const fn download_bytes(&self) -> Option<u64> {
         match self.runtime {
             ModelRuntime::Gguf(artifact) => Some(artifact.bytes),
-            ModelRuntime::AppleSpeech => None,
+            ModelRuntime::AppleSpeech | ModelRuntime::External => None,
         }
     }
 }
@@ -643,6 +650,105 @@ pub const MODELS: &[ModelDefinition] = &[
         supports_language_detection: true,
     },
     ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::BalbalManas),
+        name: "Balbal v2 Manas",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: false,
+        runtime: ModelRuntime::External,
+        languages: &["tr", "en"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::BalbalV2),
+        name: "Balbal v2",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: false,
+        runtime: ModelRuntime::External,
+        languages: &["tr"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::MihuV2),
+        name: "Mihu AI STT v2",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: true,
+        runtime: ModelRuntime::External,
+        languages: &["tr"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::DuyuSmall),
+        name: "Duyu Small",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: false,
+        runtime: ModelRuntime::External,
+        languages: &["tr", "en"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::Kulak),
+        name: "UfakZeka Kulak",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: false,
+        runtime: ModelRuntime::External,
+        languages: &["tr"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::SedaV2),
+        name: "Seda v0.2",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: true,
+        runtime: ModelRuntime::External,
+        languages: &["tr"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::SedaTiny),
+        name: "Seda v0.2 Tiny",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: true,
+        runtime: ModelRuntime::External,
+        languages: &["tr"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::TurkMed),
+        name: "TurkMedSTT General",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: false,
+        runtime: ModelRuntime::External,
+        languages: &["tr"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::External(ExternalModelId::TurkSpeak),
+        name: "TurkSpeak ITU",
+        realtime: "Unknown",
+        word_error_rate: None,
+        streams: false,
+        runtime: ModelRuntime::External,
+        languages: &["tr"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
         id: TranscriptionModelId::AppleSpeech,
         name: "Apple Speech",
         realtime: "On device",
@@ -891,6 +997,7 @@ pub fn max_audio_chunk_samples(architecture: &str, max_audio_ms: i64) -> Option<
 }
 
 pub fn model_path(model: &ModelDefinition) -> Result<PathBuf> {
+    if let TranscriptionModelId::External(id) = model.id { return external::registration_path(id); }
     let ModelRuntime::Gguf(artifact) = model.runtime else {
         bail!("{} is managed by macOS and has no model path", model.name);
     };
@@ -921,6 +1028,7 @@ pub fn is_installed(model: &ModelDefinition, language: &str) -> bool {
     #[cfg(not(target_os = "macos"))]
     let _ = language;
     match model.runtime {
+        ModelRuntime::External => matches!(model.id, TranscriptionModelId::External(id) if external::registered(id)),
         ModelRuntime::Gguf(artifact) => model_path(model)
             .and_then(|path| Ok(fs::metadata(path)?.len() == artifact.bytes))
             .unwrap_or(false),
@@ -932,6 +1040,7 @@ pub fn is_installed(model: &ModelDefinition, language: &str) -> bool {
 }
 
 pub fn is_verified(model: &ModelDefinition) -> bool {
+    if let TranscriptionModelId::External(id) = model.id { return external::registered(id); }
     if let TranscriptionModelId::Custom(id) = model.id {
         return super::custom_models::status(id) == super::custom_models::Status::Ready;
     }
@@ -946,6 +1055,9 @@ pub fn is_verified(model: &ModelDefinition) -> bool {
 
 pub fn verify_installed(model: &ModelDefinition, canceled: &AtomicBool) -> Result<PathBuf> {
     check_canceled(canceled)?;
+    if let TranscriptionModelId::External(id) = model.id {
+        return external::verify_registration(id, canceled);
+    }
     if let TranscriptionModelId::Custom(id) = model.id {
         return super::custom_models::verify(id, canceled);
     }
@@ -980,6 +1092,7 @@ fn verify_installed_at(path: &Path, model: &ModelDefinition, canceled: &AtomicBo
 /// Deletes a downloaded model with its verification receipt and any partial
 /// download. Refuses instead of waiting while a download owns the directory.
 pub fn remove_installed(model: &ModelDefinition) -> Result<()> {
+    if let TranscriptionModelId::External(id) = model.id { return external::remove(id); }
     if let TranscriptionModelId::Custom(id) = model.id {
         return super::custom_models::remove(id);
     }
@@ -1085,7 +1198,7 @@ fn delete_set_aside_in(directory: &Path) {
 /// Takes the models folder's download lock. While another process holds it
 /// (`hex model install` in a terminal, or another Hex), `waiting` hears every
 /// attempt, so a caller can report that process's progress.
-fn lock_downloads(directory: &Path, canceled: &AtomicBool, waiting: impl Fn()) -> Result<File> {
+pub(crate) fn lock_downloads(directory: &Path, canceled: &AtomicBool, waiting: impl Fn()) -> Result<File> {
     let lock = File::create(directory.join(".download.lock"))?;
     loop {
         check_canceled(canceled)?;
@@ -1143,6 +1256,25 @@ pub fn download_with_stage_progress(
     downloaded_bytes: &AtomicU64,
     stage: &AtomicU8,
 ) -> Result<PathBuf> {
+    if let TranscriptionModelId::External(id) = model.id {
+        ModelPreparationStage::Verifying.store(stage);
+        let source = external::registration_source(id)?;
+        if external::install::supported(id)
+            && source != external::RegistrationSource::Manual
+        {
+            // An intact Hex-managed model also works offline. If its files
+            // or receipt are damaged, repair only Hex-owned weights rather
+            // than committing a broken model or overwriting a custom worker.
+            if source == external::RegistrationSource::Managed {
+                if let Ok(path) = verify_installed(model, canceled) {
+                    return Ok(path);
+                }
+                check_canceled(canceled)?;
+            }
+            return external::install::install(id, canceled, downloaded_bytes, stage);
+        }
+        return verify_installed(model, canceled);
+    }
     let ModelRuntime::Gguf(artifact) = model.runtime else {
         bail!("{} is installed and managed by macOS", model.name);
     };
@@ -1742,7 +1874,7 @@ mod tests {
             .filter(|model| model.streams)
             .map(|model| match model.runtime {
                 ModelRuntime::Gguf(artifact) => artifact.variant,
-                ModelRuntime::AppleSpeech => panic!("a streaming model has a GGUF artifact"),
+                ModelRuntime::AppleSpeech | ModelRuntime::External => panic!("a streaming model has a GGUF artifact"),
             })
             .collect::<Vec<_>>();
         assert_eq!(

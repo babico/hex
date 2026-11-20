@@ -10,6 +10,7 @@
 param(
     [Parameter(Mandatory)] [string]$Executable,
     [string]$Console,
+    [string]$TurkishSttDir,
     [Parameter(Mandatory)] [string]$Version,
     [Parameter(Mandatory)] [ValidateSet('x86_64', 'aarch64')] [string]$Arch,
     [Parameter(Mandatory)] [string]$OutDir
@@ -20,6 +21,8 @@ if ($Version -notmatch '^(\d+\.\d+\.\d+(-beta\.\d+)?|0\.0\.0-dev-\d+)$') { throw
 $Executable = (Resolve-Path $Executable).Path
 $consoleDefine = @()
 if ($Console) { $consoleDefine = @("/DConsole=$((Resolve-Path $Console).Path)") }
+$turkishDefine = @()
+if ($TurkishSttDir) { $turkishDefine = @("/DTurkishSttDir=$((Resolve-Path $TurkishSttDir).Path)") }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 $label = if ($Arch -eq 'x86_64') { 'x64' } else { 'arm64' }
@@ -48,7 +51,7 @@ if (-not $iscc) {
     if (-not $iscc) { throw 'Inno Setup could not be installed.' }
 }
 
-& $iscc /Qp "/DAppVersion=$Version" "/DArch=$label" "/DExecutable=$Executable" @consoleDefine "/DOutputDir=$OutDir" $script
+& $iscc /Qp "/DAppVersion=$Version" "/DArch=$label" "/DExecutable=$Executable" @consoleDefine @turkishDefine "/DOutputDir=$OutDir" $script
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE." }
 $installer = Join-Path $OutDir "hex-setup-$Version-windows-$label.exe"
 if (-not (Test-Path $installer)) { throw "ISCC did not produce $installer." }
