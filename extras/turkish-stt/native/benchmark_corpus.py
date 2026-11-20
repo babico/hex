@@ -146,7 +146,7 @@ def weight_manifest(model: str, root: Path) -> list[dict]:
             for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
                 digest.update(chunk)
         records.append({
-            "name": str(file.relative_to(root)),
+            "name": file.relative_to(root).as_posix(),
             "bytes": file.stat().st_size,
             "sha256": digest.hexdigest(),
         })
