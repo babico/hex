@@ -103,7 +103,7 @@ class PersistentTests(unittest.TestCase):
             {"text": "İyi günler"},
         ])
         self.assertIn("Loading cached vendor weights", diagnostics.getvalue())
-        self.assertIn("Decoding /tmp/a.wav", diagnostics.getvalue())
+        self.assertIn(f"Decoding {Path('/tmp/a.wav')}", diagnostics.getvalue())
         self.assertNotIn("Decoding", out.getvalue())
 
     def test_download_dispatches_explicit_model_load(self):
