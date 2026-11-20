@@ -120,6 +120,13 @@ class CorpusTests(unittest.TestCase):
             self.assertFalse(json.loads(args.output.read_text(encoding="utf-8"))["passed"])
             self.assertEqual(FakeWorker.instances, 2)
 
+            args.max_wer = None
+            with patch.object(corpus, "ResidentWorker", FakeWorker):
+                ungraded = corpus.evaluate(args)
+            self.assertIsNone(ungraded["passed"])
+            self.assertFalse(ungraded["accuracy_gate_applied"])
+            self.assertEqual(FakeWorker.instances, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
