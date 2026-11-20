@@ -118,7 +118,11 @@ not active or preparing. `hex turkish-stt remove MODEL` also removes managed
 Sherpa weights from the exact immutable revision folder under Hex's own model
 directory (after refusing symlinks, redirects and paths outside the owned tree).
 Manually registered weights, executables and Python virtual environments are
-**never** deleted; only their registration is forgotten. Use
+**never** deleted; only their registration is forgotten. A repeat
+`hex model install seda-tiny --language tr` checks intact managed files
+locally (including offline) and repairs damaged managed revisions when a
+download is available. Corrupt or manually registered vendor definitions
+are never silently overwritten. Use
 `hex turkish-stt unregister MODEL` to forget a registration without touching
 its managed weight files. If a model is still mapped or a download holds the
 lock, removal can fail safely; close the engine and retry. If an interrupted
@@ -202,9 +206,11 @@ The worker stays loaded across the corpus and uses bounded, in-memory PCM
 frames (also safe for Unicode WAV paths on Windows). Each clip records
 transcript, ground truth, decoding time and real-time factor; the report
 includes **micro-averaged** WER/CER, total errors and a reproducible worker
-SHA-256. Thresholds are explicit and optional. The single FLEURS fixture in
-the Linux x64 CI exercises this evaluator's real native path; it does not
-stand in for a large independent corpus.
+SHA-256. Thresholds are explicit and optional; without one, the report records
+`passed: null` rather than claiming an accuracy pass. Each report also
+fingerprints the four actual ONNX/token files used for inference. The single
+FLEURS fixture in Linux x64 CI exercises this evaluator's native path, but
+does not stand in for a large independent corpus.
 
 The existing Whisper converter also accepts a JSONL manifest as the optional
 fourth argument:
