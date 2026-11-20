@@ -172,3 +172,52 @@ The fork's CI additionally runs the `transcription::external` Rust unit tests
 on Linux, alongside the cross-platform Python/native checks and actual
 recorded-speech tests. A new test's presence alone is not proof of a passing CI
 run; inspect the current branch run before marking the feature complete.
+
+## Independent Turkish corpus evaluation
+
+The earlier smoke jobs prove decoding on one known sentence; they are **not** a
+population accuracy measurement. The native evaluator can now score any
+locally reviewed JSONL manifest (one row per 16 kHz mono PCM16 WAV, paths
+relative to the manifest):
+
+```jsonl
+{"wav":"audio/01.wav","text":"Iğdır ve İstanbul hakkında konuşuyoruz."}
+{"wav":"audio/02.wav","text":"Türkçe konuşma tanıma testi."}
+```
+
+The manifest is supplied by the user; the evaluator does not download audio,
+accept licenses, or touch the selected weights. Use the same manifest across
+models and hardware for a meaningful comparison:
+
+```sh
+python extras/turkish-stt/native/benchmark_corpus.py \
+  --worker /absolute/native-dist/hex-sherpa-worker \
+  --weights /absolute/seda-tiny-weights \
+  --model seda-tiny --manifest /absolute/corpus.jsonl \
+  --output /absolute/metrics/seda-tiny.json \
+  --max-wer 0.30 --max-cer 0.15
+```
+
+The worker stays loaded across the corpus and uses bounded, in-memory PCM
+frames (also safe for Unicode WAV paths on Windows). Each clip records
+transcript, ground truth, decoding time and real-time factor; the report
+includes **micro-averaged** WER/CER, total errors and a reproducible worker
+SHA-256. Thresholds are explicit and optional. The single FLEURS fixture in
+the Linux x64 CI exercises this evaluator's real native path; it does not
+stand in for a large independent corpus.
+
+The existing Whisper converter also accepts a JSONL manifest as the optional
+fourth argument:
+
+```sh
+sh extras/turkish-stt/native/convert-whisper.sh \
+  turkmedstt /local/checkpoint /local/output /local/corpus.jsonl
+```
+
+This runs the original Transformers checkpoint and converted Q8_0 GGUF against
+each clip, recording per-clip reference/native parity and reference/native WER
+against ground truth. The report includes an aggregate corpus WER/CER, and
+the Transformers reference is loaded only once. You can use the validator
+directly with `--max-native-wer` to reject a converted model that exceeds a
+specified corpus error rate. No full TurkMed/TurkSpeak conversion or corpus
+accuracy is claimed until that exact checkpoint and manifest pass.
