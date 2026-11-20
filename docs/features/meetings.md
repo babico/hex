@@ -960,8 +960,14 @@ Record (offer, menu bar "Record Meeting", Meetings pane, or voice command)
      │       `reduced_motion_lands_the_surface_and_only_fades`). Offscreen
      │       Rune with a synthetic pointer; not seen in a native window
      ├── Stop -> the icon, label and whitespace use the same 242 × 44 pt row
-     │   and hover/focus bounds as the copies. The plain arrow stays put;
-     │   dragging the meter band repositions, dragging a row does not.
+     │   and hover/focus bounds as the copies. An enabled row shows the
+     │   pointer, a row with nothing to do keeps the arrow, and the meter
+     │   band shows the grab hand. Dragging the band repositions the
+     │   capsule, dragging a row does not
+     │   (`the_meter_band_grabs_and_a_row_with_nothing_to_do_keeps_the_arrow`;
+     │   the offer's and reminder's buttons and body,
+     │   `the_offers_buttons_take_the_pointer_while_its_body_grabs` and
+     │   `a_reminders_buttons_take_the_pointer_while_its_body_grabs`).
      │   A click queues one stop immediately. The pill stays open and the
      │   same row says “Stopping…” in place, its icon and first letters
      │   unmoved, with the waveform and elapsed time until capture ends.
@@ -1721,7 +1727,8 @@ Final publication                                   // meetings.output
 Finished meeting panel (15 s, kept open while the pointer is over it; it
     closes when the pointer leaves after that) -> title · length, the
     summary while notes are on (or "Writing a title and summary with Apple
-    Intelligence…", or "Markdown not saved: …"), then the recording's copies
+    Intelligence…" when it writes, "…with OpenCode…" otherwise, or
+    "Markdown not saved: …"), then the recording's copies
     ├── Dark in either appearance, at the recording pill’s last outer corner
     │   (the saved corner if there was no pill for this meeting)
     ├── × (Close) -> hide immediately, even under the pointer. Late notes do not

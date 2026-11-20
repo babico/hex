@@ -45,10 +45,22 @@ open Hex instead, as before iOS 26. Audio never leaves the iPhone.
     `onboarding-allow`, `onboarding-try`, `onboarding-try-done`,
     `onboarding-try-off`, and `onboarding-tour`, which walks every page by
     itself for a screen recording.
-  - **Setup:** The keyboard needs Full Access to reach Hex through the App
-    Group. Without it, the keyboard shows the Settings path and an **Open Hex
-    setup** button (`hex-dictation://keyboard/setup`), which opens the app's
-    setup sheet. Home's status line counts the setup steps left ("Finish
+  - **Without Full Access (App Review 4.4.1):** Hex is a keyboard first. The
+    full keyboard types without Full Access or network: letters, shift and caps
+    lock, numbers and symbols, accents, delete, return, the globe key, and
+    suggestions and autocorrect (`UITextChecker`, the supplementary lexicon,
+    and Spatial autocorrect's bundled model when that experiment is on). Words
+    it learns may last only while the keyboard runs, as an iPhone may not let
+    it write the App Group; haptics, Paste and dictation need Full Access. Without Full
+    Access the keyboard always mounts the full keyboard, whichever keyboard is
+    chosen (the dictation bar types only spaces and line breaks). Dictation needs
+    Full Access (Hex's App Group and the microphone): tapping the Hex key, or
+    sliding for its menu, shows for 8 s in the suggestion strip "Allow Full
+    Access to dictate" and "Settings › Apps › Hex › Keyboards", with an **Open
+    Hex** chip (`hex-dictation://keyboard/setup`) that opens the app's setup
+    sheet. Nothing else opens Hex without Full Access, and the strip shows no
+    notice until the Hex key is tapped.
+  - **Setup:** Home's status line counts the setup steps left ("Finish
     setup · 1 step ›", else "Ready") and opens the same sheet: live status for
     the keyboard, Full Access, the microphone ("For dictation" with
     **Continue**, which iOS's prompt follows, until it's asked; never a button
@@ -92,6 +104,18 @@ open Hex instead, as before iOS 26. Audio never leaves the iPhone.
     `Casual` (lowercase chat without trailing period), `Notes` (spoken
     `"bullet"` / `"next line"` markers), and `Verbatim`, with cursor-aware
     insertion spacing and repeating backspace.
+  - **Spoken "@" (English, every style but Verbatim):** "at the rate" (India's
+    name for @) and "at sign" become "@", and an address said around it joins
+    up: "John at the rate Gmail dot com" becomes "john@gmail.com", "dot" turning
+    into "." only inside the address (`SpokenCleanupRules.spokenSymbols`, run by
+    `CleanupTagger.cleanIfEnabled` with Clean up what I say on or off, in the app
+    and in-keyboard dictation). "at the rate" needs a domain after it, so "at the
+    rate of 5%" and "at the rate we planned" stay; "at" alone is never touched.
+    Apple's `SpeechTranscriber` glues the domain to the word before ("at the
+    rategmail.com"), which is split again; `DictationTranscriber` already writes
+    "@" for "at sign" and for "john at gmail dot com". Polished leaves an address's
+    case alone, starts no sentence at a full stop inside a word ("gmail.com"),
+    and ends no lone address with a full stop.
   - **Mid-sentence dictation:** when the text before the cursor doesn't end a
     sentence (`.` `!` `?` `…` or a line break), the keyboard lowercases the
     dictation's first word, except "I" and its contractions, acronyms, words
@@ -99,7 +123,7 @@ open Hex instead, as before iOS 26. Audio never leaves the iPhone.
     dictionary doesn't know in lowercase (likely names). German keeps the case,
     since its dictionary takes nouns in lowercase; so does a language with no
     dictionary on the iPhone (`TranscriptFormatter.insertionText`).
-  - **Full keyboard Hex key (Settings › Keyboard › Full):** A tap, or a
+  - **Full keyboard Hex key (Settings › Keyboard › Full, the default):** A tap, or a
     still hold of 0.35 s, starts dictation: in a warm session, else inside
     the keyboard (in-keyboard dictation, iOS 26+), else by opening Hex. Moving
     more than 10 pt first opens the style menu; releasing over a row picks it, and releasing elsewhere leaves
@@ -212,7 +236,9 @@ open Hex instead, as before iOS 26. Audio never leaves the iPhone.
     model weighs them by the word before, a missed space is tried by splitting the taps,
     accented letters read from their base key (é from e), and what you typed is replaced
     only when the best reading beats it by a margin (more when what you typed is a word).
-    Shortcuts, learned fixes, contractions, and words you kept still come first. The
+    Shortcuts, learned fixes, contractions, and words you kept still come first. Other
+    layouts (Norsk, Deutsch, Italiano, Français, Português) keep the dictionary engine in
+    their own language, never the English model. The
     models (`HEXKeyboard/TypingModel/en.hextm` and `es.hextm`, about 3.6 MB each) are
     built from Google Books Ngram v3 by `scripts/build-typing-model.py` (see
     Acknowledgements below).
@@ -234,7 +260,11 @@ open Hex instead, as before iOS 26. Audio never leaves the iPhone.
     Privacy › Advanced › Typing logs shares a day or all of them (AirDrop to a Mac) and
     deletes them. Password, one-time code, and card fields write one `skipped`
     line and nothing else. Events are buffered on the main thread and encoded and
-    appended on a utility queue every 2 s. Nothing is sent. The schema is in
+    appended on a utility queue every 2 s. Nothing is sent. While a field is
+    logged, both keyboards show a small "● Logging" mark the whole time (App
+    Review 2.5.14): in the full keyboard's strip corner, or at the start of its
+    recording bar while dictating, and beside the Hex mark in the dictation bar.
+    The schema is in
     [`docs/typing-logs.md`](docs/typing-logs.md).
 - **Settings (`ContentView`, `SettingsPages.swift`):** Home fits one screen: the
   Hex header, one status line ("Ready" with a check, or "Finish setup · 1 step ›"),
@@ -247,8 +277,11 @@ open Hex instead, as before iOS 26. Audio never leaves the iPhone.
   - **Dictation:** Style, Dictation language, Translate what I say, Clean up
     what I say, Custom vocabulary (its list below the switch), Keep mic warm,
     and Always use iPhone microphone.
-  - **Keyboard:** Keyboard, **Full** or **Dictation bar** (stored as
-    `FullKeyboardSettings.isEnabled`), then Keyboard layout, Autocorrect and Key
+  - **Keyboard:** Keyboard, **Full** (the default) or **Dictation bar** (stored
+    as `FullKeyboardSettings.isEnabled`, App Group key `experiments.fullKeyboard`
+    from when the full keyboard was an experiment: unset or true is Full, false
+    the dictation bar, so testers who turned that experiment off keep the bar),
+    then Keyboard layout, Autocorrect and Key
     pop-ups only while Full is chosen, Haptics (the dictation bar uses it too),
     and a field to try the keyboard in.
   - **Privacy:** "Everything stays on this iPhone", Learn how I type (what it
@@ -339,26 +372,31 @@ open Hex instead, as before iOS 26. Audio never leaves the iPhone.
   switch, so in-keyboard dictation, a warm session, and the Action Button
   all follow it.
 - **Keyboard layouts (Settings › Keyboard › Keyboard layout, with Full chosen):** English,
-  Norsk (`å` ending row 1, `ø æ` row 2), Español (`ñ` ending row 2) and
-  Deutsch (QWERTZ with `ü`, `ö ä`), as Apple's iOS keyboards lay them out
+  Norsk (`å` ending row 1, `ø æ` row 2), Español (`ñ` ending row 2),
+  Deutsch (QWERTZ with `ü`, `ö ä`), and Italiano, Français and Português on the
+  English letters (Apple's Italian and Portuguese keyboards are QWERTY; French is
+  QWERTY until Hex has AZERTY), as Apple's iOS keyboards lay them out
   (`KeyboardLanguage`: letter rows, long-press accents, spelling dictionary).
   Automatic follows the dictation language (Hebrew and other languages without a
   layout get English); before any dictation language is known, the first iPhone
-  keyboard, then preferred language, that has a layout. Rows of 11 keys narrow
+  keyboard, then preferred language, that has a layout. It never follows Hex's own
+  input mode, whose `primaryLanguage` is always the Info.plist's en-US. Rows of 11 keys narrow
   only the letters: shift, delete and the bottom row keep their English sizes,
   and row 3's letters sit centred between shift and delete. Long-press accents
   drop letters that have their own key (Norwegian A has no å or æ; Æ and Ø offer
-  Ä and Ö), put the language's own first (Spanish á, é, í, ó, ú, ñ, ª, º), and
+  Ä and Ö), put the language's own first (Spanish á, é, í, ó, ú, ñ, ª, º; Italian
+  à, è, ì, ò, ù; French é, à, î, ô, ù; Portuguese á, ã, é, ó, õ, ú), and
   German keeps ß on a held S. Autocorrect and suggestions use the layout's
-  `UITextChecker` dictionary (`nb`, `es`, `de`); where the iPhone has none
+  `UITextChecker` dictionary (`nb`, `es`, `de`, `it`, `fr`, `pt_BR` then
+  `pt_PT`); where the iPhone has none
   they stay off except your own text replacements, and the English contractions
   and typo list (`i` → `I`) apply only to English. Neighbouring-key costs follow
   the layout (on QWERTZ, Z sits beside T), and an accent or tilde you left out
   is the cheapest fix of all ("aqui" → "aquí", "manana" → "mañana"; a word the
   dictionary knows, such as "esta", is never changed). A two-letter non-word one
   neighbouring key (or one swap) from a very common two-letter word is fixed too
-  ("tk" → "to", Spanish "nl" → "no"; `KeyboardLanguage.commonTwoLetterWords`, English
-  and Spanish only). Auto-capitalization is unchanged.
+  ("tk" → "to", Spanish "nl" → "no"; `KeyboardLanguage.commonTwoLetterWords`, English,
+  Spanish and Italian only). Auto-capitalization is unchanged.
   The 123 and #+= pages are English's in every language, and the accent lists
   come from Apple's layouts as remembered, not checked against a device.
 - **Emoji (Settings › Experiments › Emoji, for the full keyboard):** Off by default. An emoji key
@@ -538,11 +576,29 @@ from `ci_scripts/ci_post_clone.sh`. A new model gets a new release tag and hash.
   `keyboard-capture-probe.log` records the footprint around each in-keyboard
   dictation.
 - **In-keyboard dictation memory:** Measured only in the simulator (Release,
-  iPhone 13, which enforces no limit and leaves out GPU memory): the first
-  dictation adds 7–8 MB on the dictation bar and 11–13 MB on the full keyboard
-  within 3 s of the tap (to 29–32 MB), and later ones 1–5 MB. The 32 and 24 MB
-  thresholds rest on that plus the Metal scope's GPU memory, not on an iPhone's;
-  `keyboard-capture-probe.log` records each step's footprint, peak and headroom.
+  iPhone 13, iOS 27.2, which enforces no limit and leaves out GPU memory; three
+  runs each, the same before and after the full keyboard became the default):
+  the full keyboard rests at 18.4–18.6 MB with Full Access and 18.0–18.3 MB
+  without, and its first dictation reaches 30.8–31.8 MB within 3 s of the tap
+  (peak 32.1–33.0 MB, so about 13 MB); the dictation bar rests at 20.7–20.8 MB
+  and its first dictation reaches 27.3–27.9 MB (about 7 MB). Later dictations
+  add 1–5 MB. The 32 and 24 MB thresholds rest on that plus the Metal scope's
+  GPU memory, not on an iPhone's; `keyboard-capture-probe.log` records each
+  step's footprint, peak and headroom, and keeps only its newest 256 KB once it
+  passes 512 KB.
+- **Without Full Access:** Verified in the simulator with the keyboard in a
+  real hosted field (`--snap-state hosted-keyboard`) and Full Access off: a
+  fresh install mounts the full keyboard and offers no in-keyboard dictation;
+  keys typed through the engine autocorrect ("thw" became "the", "tk" "to",
+  and with Spatial autocorrect on, "ofthw" "of the"); the Hex key shows the
+  hint. Scenes: `full-keyboard-no-access[-hint][-dark]`; `--keyboard
+  full|dictation-bar` picks the keyboard and `--typing-log-mark` shows the
+  Logging mark in the keyboard scenes. The simulator's keyboard reads the App
+  Group without Full Access; whether an iPhone's does is unverified, which is
+  why the keyboard mounts the full keyboard without Full Access whatever was
+  chosen. Full Access in a simulator: a `kTCCServiceKeyboardNetwork` row for
+  the containing app (`anomaly.hex.mobile`, auth 2) in the shut-down
+  simulator's `data/Library/TCC/TCC.db`. Unverified on a physical iPhone.
 - **First run:** Reading Full Access from the keyboard on page 3, the
   keyboard-switch signal behind "Full Access looks off"
   (`UITextInputMode.currentInputModeDidChangeNotification`), and Settings

@@ -108,8 +108,12 @@ final class KeyboardLocalDictation {
     func start(in host: UIView, allowBluetoothMic: Bool) {
         guard !isActive else { return }
         let log = KeyboardProbeLog.shared
-        log.write("start(web): mic=\(Self.describe(AVAudioApplication.shared.recordPermission)) speech=\(Self.describe(SFSpeechRecognizer.authorizationStatus())) \(KeyboardProbeLog.memory())")
-        guard AVAudioApplication.shared.recordPermission == .granted else {
+        let appAllowed = KeyboardBridge().appMicrophoneAllowed
+        log.write("start(web): mic=\(Self.describe(AVAudioApplication.shared.recordPermission)) app=\(appAllowed ? "granted" : "no") speech=\(Self.describe(SFSpeechRecognizer.authorizationStatus())) \(KeyboardProbeLog.memory())")
+        // This process keeps the permission it read when it started, so a keyboard opened
+        // before Hex was allowed the microphone (onboarding's practice field) still reads it as
+        // not allowed: Hex's own reading counts too. WebKit still checks (NotAllowedError).
+        guard AVAudioApplication.shared.recordPermission == .granted || appAllowed else {
             fail("Allow the microphone in Hex first")
             return
         }
@@ -597,19 +601,37 @@ final class KeyboardProbeLog: @unchecked Sendable {
         .containerURL(forSecurityApplicationGroupIdentifier: KeyboardBridge.appGroup)?
         .appendingPathComponent("keyboard-capture-probe.log")
 
+    /// Past this size the log keeps only its newest `trimmedBytes`, so it never grows
+    /// without limit in the App Group.
+    static let maximumBytes: UInt64 = 512 * 1024
+    static let trimmedBytes = 256 * 1024
+
     func write(_ message: String) {
         logger.notice("\(message, privacy: .public)")
         guard let url else { return }
         let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
         lock.withLock {
             if let handle = try? FileHandle(forWritingTo: url) {
-                handle.seekToEndOfFile()
+                let size = handle.seekToEndOfFile()
                 handle.write(Data(line.utf8))
                 try? handle.close()
+                if size + UInt64(line.utf8.count) > Self.maximumBytes {
+                    Self.trim(url)
+                }
             } else {
                 try? Data(line.utf8).write(to: url)
             }
         }
+    }
+
+    /// Keeps the newest `trimmedBytes`, from the first whole line in them.
+    static func trim(_ url: URL, keeping bytes: Int = trimmedBytes) {
+        guard let data = try? Data(contentsOf: url), data.count > bytes else { return }
+        var tail = data.suffix(bytes)
+        if let newline = tail.firstIndex(of: UInt8(ascii: "\n")) {
+            tail = tail[tail.index(after: newline)...]
+        }
+        try? Data(tail).write(to: url, options: .atomic)
     }
 
     static func memory() -> String {

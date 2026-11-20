@@ -239,6 +239,37 @@ final class FullKeyboardEngineTests: XCTestCase {
         XCTAssertFalse(view.hasAllocatedRecordingPanel, "Metal scope torn down once recording ends")
     }
 
+    /// iOS 26 blurs scroll views' edges inside a keyboard; on the emoji panel's 44 pt rows
+    /// that blurred every emoji (TestFlight build 32). Every scroll view in the panel and
+    /// the search hides all four edge effects.
+    func testEmojiPanelScrollViewsHideTheirEdgeEffects() throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("edge effects arrived in iOS 26") }
+        let view = FullKeyboardView(model: KeyboardViewModel(), target: target)
+        view.emojiOverride = true
+        let defaults = UserDefaults(suiteName: "anomaly.hex.tests.emoji-panel")
+        defaults?.removePersistentDomain(forName: "anomaly.hex.tests.emoji-panel")
+        view.makeEmojiUsage = { EmojiUsageStore(defaults: defaults) }
+        view.frame = CGRect(x: 0, y: 0, width: 402, height: 306)
+        view.layoutIfNeeded()
+        view.debugOpenEmoji(search: "piz")
+        view.layoutIfNeeded()
+
+        func scrollViews(in root: UIView) -> [UIScrollView] {
+            root.subviews.flatMap { child -> [UIScrollView] in
+                if let scrollView = child as? UIScrollView { return [scrollView] }
+                return scrollViews(in: child)
+            }
+        }
+        let found = scrollViews(in: view)
+        XCTAssertEqual(found.count, 3, "the grid, the suggestion row and the search results")
+        for scrollView in found {
+            for edge in [scrollView.topEdgeEffect, scrollView.bottomEdgeEffect, scrollView.leftEdgeEffect, scrollView.rightEdgeEffect] {
+                XCTAssertTrue(edge.isHidden, "\(Swift.type(of: scrollView)) at \(scrollView.frame)")
+            }
+        }
+        defaults?.removePersistentDomain(forName: "anomaly.hex.tests.emoji-panel")
+    }
+
     func testSpaceBarNamesTheDictationLanguage() {
         let model = KeyboardViewModel()
         let view = FullKeyboardView(model: model, target: target)
@@ -278,6 +309,23 @@ final class FullKeyboardEngineTests: XCTestCase {
         engine.language = .german
         XCTAssertNil(engine.layout.key(.character("å")))
         XCTAssertNotNil(engine.layout.key(.character("ü")))
+    }
+
+    /// Spatial autocorrect has English and Spanish models only: Italian falls back to the
+    /// dictionary engine in Italian, never to the English model.
+    func testSpatialAutocorrectNeverUsesAnotherLanguagesModel() {
+        let settings = FullKeyboardSettings()
+        let wasOn = settings.spatialAutocorrect
+        settings.spatialAutocorrect = true
+        defer { settings.spatialAutocorrect = wasOn }
+        let view = FullKeyboardView(model: KeyboardViewModel(), target: target)
+        view.languageOverride = .spanish
+        XCTAssertEqual(view.engine.autocorrect.decoder?.model.language, "es")
+        view.languageOverride = .italian
+        XCTAssertEqual(view.engine.autocorrect.language, .italian)
+        XCTAssertNil(view.engine.autocorrect.decoder)
+        view.languageOverride = .english
+        XCTAssertEqual(view.engine.autocorrect.decoder?.model.language, "en")
     }
 
     func testEmailFieldShowsAtAndDot() {
