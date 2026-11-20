@@ -102,7 +102,7 @@ class CorpusTests(unittest.TestCase):
                               side_effect=["çok iyi", "bir iki üç"]), \
                  patch.object(gate, "sha256", return_value="fixture-sha256"):
                 gate.run(args)
-            load.assert_called_once_with(root)
+            load.assert_called_once_with(root.resolve())
             self.assertEqual(reference.call_count, 2)
             self.assertEqual(reference.call_args_list[0].args[0], "cached")
             report = json.loads(args.output.read_text(encoding="utf-8"))
